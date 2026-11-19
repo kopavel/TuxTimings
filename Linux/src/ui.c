@@ -28,10 +28,10 @@ static const char *css_data =
     "notebook > header > tabs > tab { color: #8B949E; background: transparent; padding: 6px 16px; font-size: 0.9em; }\n"
     "notebook > header > tabs > tab:checked { color: #E6EDF3; border-bottom: 2px solid #3FB950; }\n"
     "notebook > stack { background: transparent; }\n"
-    "dropdown { background-color: #161B22; color: #E6EDF3; font-size: 0.9em; }\n"
-    "dropdown > button { background-color: #161B22; color: #E6EDF3; border: 1px solid #30363D; }\n"
+    "dropdown { background-color: #161B22; background-image: none; color: #E6EDF3; font-size: 0.9em; }\n"
+    "dropdown > button { background-color: #161B22; background-image: none; color: #E6EDF3; border: 1px solid #30363D; }\n"
     "scrolledwindow { background: transparent; }\n"
-    "button { background-color: #21262D; color: #E6EDF3; border: 1px solid #30363D; border-radius: 6px; padding: 4px 12px; font-size: 0.85em; }\n"
+    "button { background-color: #21262D; background-image: none; box-shadow: none; color: #E6EDF3; border: 1px solid #30363D; border-radius: 6px; padding: 4px 12px; font-size: 0.85em; }\n"
     "button:hover { background-color: #30363D; }\n"
     "button:disabled { opacity: 0.4; }\n";
 

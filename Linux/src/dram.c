@@ -2,7 +2,7 @@
  * dram.c — SMN access and per-UMC-channel probing for TuxTimings.
  *
  * Channel enumeration and register layout ported from ZenStates-Core
- * (ZenTimings), MIT License, (c) Ilian Rusanov:
+ * (ZenTimings), GPL-3.0, (c) Ilian Rusanov:
  *   Hardware/DRAM/MemoryConfig.cs (ReadChannelsNoLock: offsets i<<20,
  *   0x50DF0 bit 19 channel enable, 0x50000/0x50008 DIMM presence).
  * All register decoding lives in dram_decode.c (pure, unit-testable).

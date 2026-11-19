@@ -5,7 +5,7 @@
  * Pure register-decoding layer (no hardware access).
  *
  * Register maps and bit fields ported from ZenStates-Core (ZenTimings),
- * MIT licensed — see Hardware/DRAM/Ddr5Timings.cs, Hardware/DRAM/BaseDramTimings.cs,
+ * GPL-3.0 licensed — see Hardware/DRAM/Ddr5Timings.cs, Hardware/DRAM/BaseDramTimings.cs,
  * Dictionaries/DDR5Dictionary.cs, Hardware/DRAM/MemoryConfig.cs,
  * Hardware/Aod/AodData.cs and Dictionaries/EncodedValueDictionaries.cs.
  *

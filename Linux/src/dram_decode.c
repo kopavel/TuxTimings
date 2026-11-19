@@ -2,7 +2,7 @@
  * dram_decode.c — pure UMC / AOD register decoding for TuxTimings.
  *
  * Register maps, bit fields and value encodings ported from ZenStates-Core
- * (ZenTimings), MIT License, (c) Ilian Rusanov:
+ * (ZenTimings), GPL-3.0, (c) Ilian Rusanov:
  *   Hardware/DRAM/BaseDramTimings.cs, Hardware/DRAM/Ddr5Timings.cs,
  *   Dictionaries/DDR5Dictionary.cs, Hardware/DRAM/MemoryConfig.cs,
  *   Hardware/Aod/AodData.cs, Dictionaries/AodDictionaries.cs,

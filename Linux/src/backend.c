@@ -14,6 +14,7 @@
 #include <fnmatch.h>
 #include <glob.h>
 #include <math.h>
+#include <errno.h>
 
 #define SMU_PATH "/sys/kernel/ryzen_smu_drv"
 
@@ -22,9 +23,44 @@
  * buffers here are 640 bytes — more than sufficient for any sysfs path. */
 #pragma GCC diagnostic ignored "-Wformat-truncation"
 
-/* system() is marked warn_unused_result in glibc; we genuinely don't care
- * about the exit code for best-effort modprobe/shell calls. */
-static void run_shell(const char *cmd) { int r = system(cmd); (void)r; }
+/* Execute modprobe without invoking a privileged shell. */
+static int load_module(const char *module, const char *parameter)
+{
+    const char *mp = access("/usr/bin/modprobe", X_OK) == 0 ? "/usr/bin/modprobe" :
+                     access("/sbin/modprobe", X_OK) == 0 ? "/sbin/modprobe" : NULL;
+    if (!mp) return 0;
+    pid_t pid = fork();
+    if (pid < 0) return 0;
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
+        if (parameter)
+            execl(mp, mp, module, parameter, (char *)NULL);
+        else
+            execl(mp, mp, module, (char *)NULL);
+        _exit(127);
+    }
+    int status;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) return 0;
+    }
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+/* Accept only a numeric 16-bit Super I/O chip identifier. */
+static int parse_force_id(const char *value, char *out, size_t outsz)
+{
+    if (!value || !*value) return 0;
+    for (const unsigned char *p = (const unsigned char *)value; *p; ++p)
+        if (!((*p >= '0' && *p <= '9') ||
+              (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F') ||
+              *p == 'x' || *p == 'X')) return 0;
+    errno = 0;
+    char *end;
+    unsigned long id = strtoul(value, &end, 0);
+    if (errno || end == value || *end || id == 0 || id > 0xffff) return 0;
+    return snprintf(out, outsz, "force_id=0x%lx", id) > 0;
+}
 
 /* ── Cached static data ─────────────────────────────────────────────── */
 static int  s_cached_static = 0;
@@ -1149,12 +1185,10 @@ int backend_is_supported(void)
     if (file_exists(path)) return 1;
 
     /* Module may have been unloaded — try loading it now */
-    const char *mp = access("/usr/bin/modprobe", X_OK) == 0 ? "/usr/bin/modprobe" :
-                     access("/sbin/modprobe",    X_OK) == 0 ? "/sbin/modprobe"    :
-                                                               "modprobe";
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd), "%s ryzen_smu 2>/dev/null", mp);
-    run_shell(cmd);
+    if (access("/sys/module/ryzen_smu", F_OK) != 0 &&
+        load_module("ryzen_smu", NULL) &&
+        access("/sys/module/ryzen_smu", F_OK) == 0)
+        s_loaded_ryzen_smu = 1;
     return file_exists(path);
 }
 
@@ -1233,31 +1267,22 @@ void backend_read_summary(system_summary_t *out)
 
     /* Load kernel modules and cache static data on first call */
     if (!s_cached_static) {
-        /* Use absolute path — pkexec strips PATH */
-        const char *mp = access("/usr/bin/modprobe", X_OK) == 0 ? "/usr/bin/modprobe" :
-                         access("/sbin/modprobe",    X_OK) == 0 ? "/sbin/modprobe"    :
-                                                                   "modprobe";
-        char cmd[256];
-        snprintf(cmd, sizeof(cmd), "%s msr 2>/dev/null", mp);
-        run_shell(cmd);
-        snprintf(cmd, sizeof(cmd), "%s ryzen_smu 2>/dev/null", mp);
-        run_shell(cmd);
+        load_module("msr", NULL);
+        /* Only unload modules that were absent before this initialization. */
+        if (access("/sys/module/ryzen_smu", F_OK) != 0 &&
+            load_module("ryzen_smu", NULL) &&
+            access("/sys/module/ryzen_smu", F_OK) == 0)
+            s_loaded_ryzen_smu = 1;
 
         /* Load aod_voltages — kernel module auto-detects offsets via SMU codename */
-        if (!file_exists("/sys/kernel/aod_voltages/mem_vddio")) {
-            snprintf(cmd, sizeof(cmd), "%s aod_voltages 2>/dev/null", mp);
-            run_shell(cmd);
-        }
-        /* Always unload on exit — these modules are only useful while the app runs */
-        if (file_exists("/sys/kernel/aod_voltages/mem_vddio"))
+        if (access("/sys/module/aod_voltages", F_OK) != 0 &&
+            load_module("aod_voltages", NULL) &&
+            access("/sys/module/aod_voltages", F_OK) == 0)
             s_loaded_aod_voltages = 1;
-        if (file_exists("/sys/kernel/ryzen_smu_drv/version"))
-            s_loaded_ryzen_smu = 1;
-        if (access("/sys/module/tuxbench", F_OK) != 0) {
-            snprintf(cmd, sizeof(cmd), "%s tuxbench 2>/dev/null", mp);
-            run_shell(cmd);
-        }
-        if (access("/sys/module/tuxbench", F_OK) == 0)
+
+        if (access("/sys/module/tuxbench", F_OK) != 0 &&
+            load_module("tuxbench", NULL) &&
+            access("/sys/module/tuxbench", F_OK) == 0)
             s_loaded_tuxbench = 1;
 
         /* Load a board-sensor Super I/O driver if no fan-capable hwmon chip
@@ -1278,8 +1303,7 @@ void backend_read_summary(system_summary_t *out)
                 const char *mods[] = {"nct6775", "nct6775_platform", "it87",
                                       "f71882fg", "w83627hf", NULL};
                 for (int i = 0; mods[i] && !found; i++) {
-                    snprintf(cmd, sizeof(cmd), "%s %s 2>/dev/null", mp, mods[i]);
-                    run_shell(cmd);
+                    load_module(mods[i], NULL);
                     char p2[640];
                     if (find_hwmon_by_name("nct6", p2, sizeof(p2)) ||
                         find_hwmon_by_name("it87", p2, sizeof(p2)) ||
@@ -1288,13 +1312,10 @@ void backend_read_summary(system_summary_t *out)
                         found = 1;
                 }
                 const char *fid = getenv("TUXTIMINGS_NCT_FORCE_ID");
-                if (fid && !found) {
-                    snprintf(cmd, sizeof(cmd),
-                             "%s nct6775 force_id=%s 2>/dev/null", mp, fid);
-                    run_shell(cmd);
-                    snprintf(cmd, sizeof(cmd),
-                             "%s it87 force_id=%s 2>/dev/null", mp, fid);
-                    run_shell(cmd);
+                char parameter[32];
+                if (!found && parse_force_id(fid, parameter, sizeof(parameter))) {
+                    load_module("nct6775", parameter);
+                    load_module("it87", parameter);
                 }
             }
         }

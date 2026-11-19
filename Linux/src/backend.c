@@ -11,6 +11,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <fnmatch.h>
+#include <glob.h>
 #include <math.h>
 
 #define SMU_PATH "/sys/kernel/ryzen_smu_drv"
@@ -612,13 +614,104 @@ static void read_spd_temps(smu_metrics_t *m)
     closedir(hwmon);
 }
 
-/* ── Fan speeds (Nuvoton nct6xxx) ───────────────────────────────────── */
+/* ── Fan names from lm-sensors config (optional) ──────────────────────
+ * Board sensor packs for the CLI `sensors` tool name fan channels with
+ * 'label fanN "..."' directives in /etc/sensors3.conf and
+ * /etc/sensors.d/ config files (matched by a chip line such as
+ * 'chip "it8696_a0040507-*"'). When the kernel driver does not provide a
+ * fan<N>_label attribute, apply the same standard mapping so the GUI shows
+ * connector names (CPU_FAN, SYS_FAN1, ...) instead of Fan1, Fan2, ...
+ * Parsed once, at first use during this process lifetime. */
 
-static void read_fans(fan_reading_t *fans, int *count)
+typedef struct {
+    char pat[64];
+    int  fan;
+    char label[32];
+} sensors_label_t;
+
+#define MAX_SENSOR_LABELS 256
+static sensors_label_t s_slabels[MAX_SENSOR_LABELS];
+static int s_slabel_count = -1; /* -1 = not loaded yet */
+
+static void parse_sensors_conf(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[1024];
+    char pats[6][64];
+    int npat = 0;
+    while (fgets(line, sizeof(line), f) && s_slabel_count < MAX_SENSOR_LABELS) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || *p == '\n' || *p == '\0') continue;
+        if (strncmp(p, "chip", 4) == 0 && (p[4] == ' ' || p[4] == '\t')) {
+            npat = 0;
+            char *tok = strtok(p + 5, " \t\n\"");
+            while (tok && npat < 6) {
+                snprintf(pats[npat], sizeof(pats[npat]), "%.63s", tok);
+                npat++;
+                tok = strtok(NULL, " \t\n\"");
+            }
+            continue;
+        }
+        int fan = 0;
+        char lbl[32];
+        if (npat > 0 && sscanf(p, " label fan%d \"%31[^\"]\"", &fan, lbl) == 2) {
+            for (int k = 0; k < npat && s_slabel_count < MAX_SENSOR_LABELS; k++) {
+                snprintf(s_slabels[s_slabel_count].pat, 64, "%s", pats[k]);
+                for (char *q = s_slabels[s_slabel_count].pat; *q; q++)
+                    *q = (char)tolower((unsigned char)*q);
+                s_slabels[s_slabel_count].fan = fan;
+                snprintf(s_slabels[s_slabel_count].label, 32, "%s", lbl);
+                s_slabel_count++;
+            }
+        }
+    }
+    fclose(f);
+}
+
+static const char *sensors_fan_label(const char *chip, int fan)
+{
+    if (s_slabel_count < 0) {
+        s_slabel_count = 0;
+        parse_sensors_conf("/etc/sensors3.conf");
+        glob_t g;
+        if (glob("/etc/sensors.d/*", 0, NULL, &g) == 0) {
+            for (size_t i = 0; i < g.gl_pathc; i++)
+                parse_sensors_conf(g.gl_pathv[i]); /* dirs fail fopen: skipped */
+            globfree(&g);
+        }
+    }
+    char probe[96];
+    snprintf(probe, sizeof(probe), "%.79s-", chip); /* chip patterns end in "-*" */
+    for (int i = 0; i < s_slabel_count; i++)
+        if (s_slabels[i].fan == fan &&
+            fnmatch(s_slabels[i].pat, probe, 0) == 0)
+            return s_slabels[i].label;
+    return NULL;
+}
+
+/* ── Fan speeds (board sensor Super I/O chips) ──────────────────────── */
+
+static int is_fan_chip_name(const char *lower)
+{
+    return strncmp(lower, "nct6", 4) == 0 ||
+           strstr(lower, "nuvoton") != NULL ||
+           strncmp(lower, "it87", 4) == 0 ||
+           strncmp(lower, "it86", 4) == 0 ||  /* dkms it87: it8696_<SIV> style names */
+           strncmp(lower, "w836", 4) == 0 ||
+           strncmp(lower, "f718", 4) == 0 ||
+           strncmp(lower, "gigabyte", 8) == 0 ||  /* WMI fan temps, if any */
+           strncmp(lower, "amdgpu", 6) == 0;   /* GPU cooler fan, if present */
+}
+
+/* Returns: bitmask — bit0 fan chip seen, bit1 RPM found */
+static int read_fans(fan_reading_t *fans, int *count)
 {
     *count = 0;
+    int chip_seen = 0;
     DIR *hwmon = opendir("/sys/class/hwmon");
-    if (!hwmon) return;
+    if (!hwmon) return 0;
     struct dirent *ent;
     while ((ent = readdir(hwmon))) {
         if (ent->d_name[0] == '.') continue;
@@ -630,30 +723,42 @@ static void read_fans(fan_reading_t *fans, int *count)
         for (; name[li] && li < 63; li++)
             lower[li] = (char)tolower((unsigned char)name[li]);
         lower[li] = '\0';
-        if (strncmp(lower, "nct6", 4) != 0 && !strstr(lower, "nuvoton"))
+        if (!is_fan_chip_name(lower))
             continue;
 
         char dir[640];
         snprintf(dir, sizeof(dir), "/sys/class/hwmon/%s", ent->d_name);
-        int found_any = 0;
-        for (int i = 1; i <= 7 && *count < MAX_FANS; i++) {
+        int is_gpu = strncmp(lower, "amdgpu", 6) == 0;
+        for (int i = 1; i <= 10 && *count < MAX_FANS; i++) {
             char path[640];
             snprintf(path, sizeof(path), "%s/fan%d_input", dir, i);
+            if (access(path, F_OK) == 0) chip_seen = 1;
             int rpm = read_int_file(path);
             if (rpm <= 0) continue;
             fan_reading_t *fan = &fans[(*count)++];
-            if (i == 7)
+            /* driver label when available (e.g. "CPU_FAN", "SYS_FAN1") */
+            char lpath[640], label[64] = {0};
+            snprintf(lpath, sizeof(lpath), "%s/fan%d_label", dir, i);
+            read_file_string(lpath, label, sizeof(label));
+            if (!label[0]) {
+                const char *sl = sensors_fan_label(lower, i);
+                if (sl)
+                    snprintf(label, sizeof(label), "%s", sl);
+            }
+            if (is_gpu)
+                snprintf(fan->label, sizeof(fan->label), "GPU");
+            else if (label[0])
+                snprintf(fan->label, sizeof(fan->label), "%.15s", label);
+            else if (i == 7)
                 snprintf(fan->label, sizeof(fan->label), "Pump");
             else
                 snprintf(fan->label, sizeof(fan->label), "Fan%d", i);
             fan->rpm = rpm;
-            found_any = 1;
         }
-        if (found_any) break;
     }
     closedir(hwmon);
+    return chip_seen ? 1 : 0;
 }
-
 /* ── /proc/stat per-core usage ──────────────────────────────────────── */
 
 static void read_core_usage(smu_metrics_t *m)
@@ -997,6 +1102,45 @@ void backend_read_summary(system_summary_t *out)
             if (!find_hwmon_by_name("nct6", hwmon_path, sizeof(hwmon_path))) {
                 snprintf(cmd, sizeof(cmd), "%s nct6775 2>/dev/null", mp);
                 run_shell(cmd);
+            }
+        }
+
+        /* Load a board-sensor Super I/O driver if no fan-capable hwmon chip
+         * is active yet. All attempts are auto-detecting loads (read-only
+         * ID probes; no-op when the chip is absent). On some kernels nct6775
+         * is split into _core + _platform, so try both.
+         * Gigabyte AM5 boards sometimes hide the chip's ID register behind
+         * an unlock sequence — pass e.g. TUXTIMINGS_NCT_FORCE_ID=0xc7
+         * (NCT6796D), 0xd4 (NCT6798D) or 0x8686/0x8696 (IT8686E/IT8696E
+         * for the it87 driver) as a second step. */
+        {
+            char tmp_path[640];
+            int found = 0;
+            const char *chips[] = {"nct6", "it87", "w836", "f718", "nuvoton", NULL};
+            for (int i = 0; chips[i] && !found; i++)
+                found = find_hwmon_by_name(chips[i], tmp_path, sizeof(tmp_path));
+            if (!found) {
+                const char *mods[] = {"nct6775", "nct6775_platform", "it87",
+                                      "f71882fg", "w83627hf", NULL};
+                for (int i = 0; mods[i] && !found; i++) {
+                    snprintf(cmd, sizeof(cmd), "%s %s 2>/dev/null", mp, mods[i]);
+                    run_shell(cmd);
+                    char p2[640];
+                    if (find_hwmon_by_name("nct6", p2, sizeof(p2)) ||
+                        find_hwmon_by_name("it87", p2, sizeof(p2)) ||
+                        find_hwmon_by_name("w836", p2, sizeof(p2)) ||
+                        find_hwmon_by_name("f718", p2, sizeof(p2)))
+                        found = 1;
+                }
+                const char *fid = getenv("TUXTIMINGS_NCT_FORCE_ID");
+                if (fid && !found) {
+                    snprintf(cmd, sizeof(cmd),
+                             "%s nct6775 force_id=%s 2>/dev/null", mp, fid);
+                    run_shell(cmd);
+                    snprintf(cmd, sizeof(cmd),
+                             "%s it87 force_id=%s 2>/dev/null", mp, fid);
+                    run_shell(cmd);
+                }
             }
         }
 

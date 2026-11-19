@@ -573,7 +573,9 @@ static void refresh_ui(app_widgets_t *w)
         int off = 0;
         for (int i = 0; i < s->fan_count; i++)
             off += snprintf(buf + off, sizeof(buf) - off, "%s: %d RPM  ", s->fans[i].label, s->fans[i].rpm);
-        if (off == 0) snprintf(buf, sizeof(buf), "—");
+        if (off == 0)
+            snprintf(buf, sizeof(buf),
+                     "N/A — no kernel interface for this board's fan controller (EC-only)");
         set_label_text(w->lbl_fans, buf);
     }
 }
@@ -914,11 +916,20 @@ static void on_activate(GtkApplication *app, gpointer user_data)
     GtkWidget *ram_tab = build_ram_tab(w);
     gtk_notebook_append_page(GTK_NOTEBOOK(notebook), ram_tab, gtk_label_new("RAM"));
 
-    GtkWidget *cpu_tab = build_cpu_tab(w);
-    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), cpu_tab, gtk_label_new("CPU"));
+    /* CPU/Bench content can exceed the window on short displays; let them
+     * scroll so the window's minimum stays below the content minimum (GTK
+     * warns otherwise: "Trying to measure ... needs at least ..."). */
+    GtkWidget *cpu_scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(cpu_scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(cpu_scroll), build_cpu_tab(w));
+    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), cpu_scroll, gtk_label_new("CPU"));
 
-    GtkWidget *bench_tab = build_bench_tab(w);
-    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), bench_tab, gtk_label_new("Benchmark"));
+    GtkWidget *bench_scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(bench_scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(bench_scroll), build_bench_tab(w));
+    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), bench_scroll, gtk_label_new("Benchmark"));
 
     gtk_box_append(GTK_BOX(main_box), notebook);
 

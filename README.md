@@ -25,6 +25,26 @@ If your CPU family is not listed or shows incomplete readings, you can help by r
 
 > **Note:** TuxTimings automatically loads `ryzen_smu` and `aod_voltages` on startup and unloads them on exit. No manual `modprobe` is needed.
 
+### Fan speeds & board sensors
+
+TuxTimings reads fans from standard Linux hwmon (`/sys/class/hwmon`): any
+distro-shipped board-sensor driver that binds (`nct6775`, `it87`, `w83627hf`,
+`f71882fg`, …) shows up automatically, and the GPU cooler fan is read from
+`amdgpu`. Fan connector names (`CPU_FAN`, `SYS_FAN1`, …) are taken from the
+kernel's `fan<N>_label` when present, otherwise from the standard
+`label fanN "…"` entries of `/etc/sensors3.conf` / `/etc/sensors.d/` — the
+same configuration the `sensors` CLI uses.
+
+On some recent motherboards (e.g. Gigabyte AM5) the BIOS restricts the
+sensor chip's I/O ports to SMM-only access, so no in-kernel driver can
+probe it and the Fans row correctly shows N/A. Owners of such boards can
+optionally use the community-maintained out-of-tree
+[`it87` driver](https://github.com/frankcrawford/it87) (GPL, built and
+installed per that project's own README), whose sensor-config installer
+also provides the fan names — TuxTimings picks both up with no extra
+setup. Nothing in TuxTimings depends on that driver; it is mentioned
+here only as a known workaround for BIOS-gated boards.
+
 ### Installing
 
 #### Arch Linux / CachyOS (recommended)

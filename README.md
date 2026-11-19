@@ -1,6 +1,18 @@
 <h1 align="center">TuxTimings</h1>
 
-![TuxTimings](screenshot.png "TuxTimings")
+### Screenshots
+
+**Zen 5 / DDR5 memory timings**
+
+![DDR5 timings](screenshot.png)
+
+**DDR5 controller configuration and electrical settings**
+
+![DDR5 electrical settings](screenshot-ddr5-config.png)
+
+**CPU monitoring, voltages, temperatures and fan labels**
+
+![CPU monitoring](screenshot-cpu.png)
 
 ### Supported CPUs
 

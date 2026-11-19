@@ -179,7 +179,11 @@ static const pm_family_map_t GRANITE_620205 = {
     },
     .named_count = 10,
     .vid_idx = 275, .ppt_idx = 3, .socket_power_idx = 220,
-    .core_voltage_start = 309, .core_temp_start = 333, .core_clock_start = 349,
+    /* Per-core voltages verified on 9950X / AGESA ComboAM5PI-1.3.0.1e:
+     * 317..332 hold 0.74..0.93 V (matches package vcore at 271);
+     * 301..316 are unrelated small per-core values. Temps 333..348 and
+     * clocks 349..364 unchanged. */
+    .core_voltage_start = 317, .core_temp_start = 333, .core_clock_start = 349,
     .max_cores = 16
 };
 

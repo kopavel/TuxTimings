@@ -28,9 +28,14 @@ Additional fields:
 | 11            | IOD hotspot temp (°C) |
 | 220           | Socket power (W) |
 | 275           | `vid` (Aggregate VID) |
-| 301–316       | `core_voltages[0–15]` (Per-core voltages, C0–C15) |
+| 317–332       | `core_voltages[0–15]` (Per-core voltages, C0–C15) |
 | 333–348       | `core_temps_c[0–15]` (Per-core temps, °C) |
 | 349–364       | `core_clocks_ghz[0–15]` (Per-core clocks, GHz) |
+
+> Corrected from live 9950X data (AGESA ComboAM5PI-1.3.0.1e): indices
+> 301–316 hold small per-core values that are **not** voltages (0.01–0.65,
+> units unknown); the voltage array starts at 317 and matches the package
+> vcore at 271. Reading voltages from 301 or 309 mislabels every core.
 
 ---
 

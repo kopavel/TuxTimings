@@ -1158,6 +1158,75 @@ int backend_is_supported(void)
     return file_exists(path);
 }
 
+/* Resolve SMBIOS modules to UMC channels and (when hardware allows)
+ * correct the slot digits to silkscreen numbering.
+ * - channel: slot-label letter matches UMC instance i at offset i<<20,
+ *   the ZenStates-Core ReadChannelsNoLock slot convention.
+ * - numbering: the locator digit may be 0-based (Gigabyte AM5: 'DIMM 1'
+ *   = second DIMM of the channel, silkscreen A2/B2) or 1-based. Hardware
+ *   decides: a module's digit + shift must equal its populated
+ *   chip-select position + 1. When exactly one shift in {0,1} fits,
+ *   relabel slot_label/slot_display to the silkscreen name.
+ * Mutates mods[0..nmods-1]; requires channels[] decoded (has_dimm). */
+static void resolve_module_slots(memory_module_t *mods, int nmods,
+                                 const dram_channel_t *chans, int chan_count)
+{
+    for (int i = 0; i < nmods; i++) {
+        mods[i].channel_idx = -1;
+        char l = mods[i].slot_label[0];
+        if (!isalpha((unsigned char)l)) continue;
+        int letter = toupper((unsigned char)l) - 'A';
+        for (int c = 0; c < chan_count; c++) {
+            if (!chans[c].present) continue;
+            if ((int)(chans[c].smn_offset >> 20) == letter) {
+                mods[i].channel_idx = (int16_t)c;
+                break;
+            }
+        }
+    }
+    for (int c = 0; c < chan_count; c++) {
+        const dram_channel_t *ch = &chans[c];
+        if (!ch->present || !ch->has_ranks) continue;
+        int pos_of[2] = { -1, -1 }; int npos = 0;
+        for (int q = 0; q < 2; q++)
+            if (ch->has_dimm[q]) pos_of[npos++] = q;
+        int idx[2] = { -1, -1 }; int digits[2] = { -1, -1 }; int nm = 0;
+        bool usable = true;
+        for (int i = 0; i < nmods && usable; i++) {
+            if (mods[i].channel_idx != c) continue;
+            char sl; int num = -1;
+            if (sscanf(mods[i].slot_label, "%c%d", &sl, &num) != 2
+                || num < 0 || nm >= 2)
+                usable = false;
+            else { idx[nm] = i; digits[nm] = num; nm++; }
+        }
+        if (!usable || nm == 0 || nm != npos) continue;
+        if (nm == 2 && digits[0] > digits[1]) {
+            int ti = idx[0], td = digits[0];
+            idx[0] = idx[1]; digits[0] = digits[1];
+            idx[1] = ti;    digits[1] = td;
+        }
+        for (int shift = 0; shift <= 1; shift++) {
+            bool fit = true;
+            for (int k = 0; k < nm; k++)
+                if (digits[k] + shift != pos_of[k] + 1) fit = false;
+            if (!fit) continue;
+            if (shift == 0) break; /* already silkscreen-aligned */
+            for (int k = 0; k < nm; k++) {
+                char sl = 'A'; int num = 0;
+                sscanf(mods[idx[k]].slot_label, "%c%d", &sl, &num);
+                snprintf(mods[idx[k]].slot_label,
+                         sizeof(mods[idx[k]].slot_label), "%c%d", sl, num + shift);
+                snprintf(mods[idx[k]].slot_display,
+                         sizeof(mods[idx[k]].slot_display),
+                         "Module %d: %s - %s", idx[k] + 1,
+                         mods[idx[k]].slot_label, mods[idx[k]].capacity_display);
+            }
+            break;
+        }
+    }
+}
+
 void backend_read_summary(system_summary_t *out)
 {
     memset(out, 0, sizeof(*out));
@@ -1307,23 +1376,10 @@ void backend_read_summary(system_summary_t *out)
         for (int i = 0; i < out->channel_count; i++)
             if (out->channels[i].present) out->present_channels++;
 
-        /* Relate SMBIOS modules to UMC channels: the slot-label letter
-         * (A1/A2...) matches UMC instance i where offset(i<<20), the same
-         * convention ZenStates-Core's ReadChannelsNoLock uses for slot
-         * naming. */
-        for (int i = 0; i < s_module_count; i++) {
-            out->modules[i].channel_idx = -1;
-            char l = out->modules[i].slot_label[0];
-            if (!isalpha((unsigned char)l)) continue;
-            int letter = toupper((unsigned char)l) - 'A';
-            for (int c = 0; c < out->channel_count; c++) {
-                if (!out->channels[c].present) continue;
-                if ((int)(out->channels[c].smn_offset >> 20) == letter) {
-                    out->modules[i].channel_idx = (int16_t)c;
-                    break;
-                }
-            }
-        }
+        /* Resolve SMBIOS slot labels against the decoded channels:
+         * channel index + silkscreen numbering (0-based BIOS digits). */
+        resolve_module_slots(out->modules, out->module_count,
+                             out->channels, out->channel_count);
     }
 
     /* Electrical parameters from the AOD ACPI table (Granite Ridge) */
@@ -1734,11 +1790,19 @@ char *backend_read_debug_dump(void)
                 DUMP("\n");
                 if (off + 8192 >= cap) break;
             }
-            DUMP("SMBIOS modules (inputs to physical-slot pairing):\n");
-            for (int i = 0; i < s_module_count; i++) {
-                DUMP("  [%d] slot=%-6s bank='%s' locator='%s'\n", i,
-                     s_modules[i].slot_label, s_modules[i].bank_label,
-                     s_modules[i].device_locator);
+            DUMP("SMBIOS modules (raw inputs -> resolved slot names):\n");
+            {
+                static memory_module_t mods_copy[MAX_MODULES];
+                memcpy(mods_copy, s_modules,
+                       (size_t)s_module_count * sizeof(memory_module_t));
+                for (int i = 0; i < s_module_count; i++)
+                    DUMP("  [%d] slot=%-6s bank='%s' locator='%s'\n", i,
+                         s_modules[i].slot_label, s_modules[i].bank_label,
+                         s_modules[i].device_locator);
+                resolve_module_slots(mods_copy, s_module_count, chans, chan_count);
+                for (int i = 0; i < s_module_count; i++)
+                    DUMP("  [%d] -> resolved slot=%-4s channel_idx=%d\n", i,
+                         mods_copy[i].slot_label, (int)mods_copy[i].channel_idx);
             }
             DUMP("\n");
         }

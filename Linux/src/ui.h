@@ -14,13 +14,17 @@ typedef struct {
     GtkWidget *lbl_board_info;
     GtkWidget *combo_modules;
 
+    /* RAM tab — which channel's UMC registers are displayed (driven by the
+     * selected module) */
+    GtkWidget *lbl_channel_note;
+
     /* RAM tab — DIMM section */
     GtkWidget *lbl_speed, *lbl_mclk, *lbl_fclk, *lbl_uclk, *lbl_bclk;
     GtkWidget *lbl_gdm, *lbl_powerdown, *lbl_spd_temp;
 
     /* RAM tab — DIMM info */
     GtkWidget *lbl_capacity, *lbl_manufacturer, *lbl_part_number;
-    GtkWidget *lbl_serial_number, *lbl_rank, *lbl_cmd2t;
+    GtkWidget *lbl_serial_number, *lbl_rank, *lbl_cmd2t, *lbl_dimm_channel;
 
     /* RAM tab — Voltages */
     GtkWidget *lbl_vsoc, *lbl_vddp, *lbl_vddg_ccd, *lbl_vddg_iod;
@@ -42,6 +46,28 @@ typedef struct {
     GtkWidget *lbl_rdrd_scl, *lbl_wrwr_scl, *lbl_cke, *lbl_xp;
     GtkWidget *lbl_trc_page, *lbl_mod, *lbl_mod_pda, *lbl_mrd, *lbl_mrd_pda;
     GtkWidget *lbl_stag, *lbl_stag_sb, *lbl_phy_wrl, *lbl_phy_rdl, *lbl_phy_wrd;
+
+    /* RAM tab — Extended timings (new, per-channel) */
+    GtkWidget *lbl_rp_pb, *lbl_rc_pb, *lbl_ppd, *lbl_mw;
+    GtkWidget *lbl_rdpost, *lbl_wrpost, *lbl_rdrd_ban, *lbl_wrwr_ban;
+    GtkWidget *lbl_dllk, *lbl_xs, *lbl_mrri, *lbl_mrr, *lbl_mrw, *lbl_ctrl_switch;
+    GtkWidget *lbl_csh, *lbl_cacsh, *lbl_srx2srx, *lbl_stab;
+    GtkWidget *lbl_zqcs, *lbl_zqoper, *lbl_zqcs_int;
+
+    /* RAM tab — Controller config (new) */
+    GtkWidget *lbl_refresh_mode, *lbl_fgr, *lbl_bgs, *lbl_bgs_alt;
+    GtkWidget *lbl_bank_group_en, *lbl_ecc, *lbl_burst_length, *lbl_burst_ctrl;
+    GtkWidget *lbl_pd_mode, *lbl_aggr_pd, *lbl_odts, *lbl_odts_int;
+    GtkWidget *lbl_uclk_gt_fclk, *lbl_wck_ratio, *lbl_nitro, *lbl_nitro_mode;
+    GtkWidget *lbl_channel_ranks, *lbl_memclk_ratio;
+
+    /* RAM tab — Electrical / termination (new, AOD) */
+    GtkWidget *lbl_proc_odt, *lbl_proc_odt_pu, *lbl_proc_odt_pd;
+    GtkWidget *lbl_rtt_nom_wr, *lbl_rtt_nom_rd, *lbl_rtt_wr;
+    GtkWidget *lbl_rtt_park, *lbl_rtt_park_dqs;
+    GtkWidget *lbl_cadbus_ds, *lbl_proc_dq_ds, *lbl_proc_dq_ds_pu, *lbl_proc_dq_ds_pd;
+    GtkWidget *lbl_proc_cs_ds, *lbl_proc_ck_ds;
+    GtkWidget *lbl_dram_ds, *lbl_dram_dq_ds_pu, *lbl_dram_dq_ds_pd;
 
     /* RAM tab — Footer */
     GtkWidget *lbl_footer_type;

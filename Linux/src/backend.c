@@ -196,6 +196,7 @@ static void build_module_display(memory_module_t *m, int index)
     double gib = (double)m->capacity_bytes / (1024.0 * 1024.0 * 1024.0);
     snprintf(m->capacity_display, sizeof(m->capacity_display), "%.1f GiB", gib);
     snprintf(m->slot_display, sizeof(m->slot_display), "Module %d: %s - %s", index + 1, m->slot_label, m->capacity_display);
+    m->channel_idx = -1; /* resolved per refresh against the UMC channels */
 }
 
 static void parse_dmidecode_memory(void)
@@ -759,6 +760,7 @@ static int read_fans(fan_reading_t *fans, int *count)
     closedir(hwmon);
     return chip_seen ? 1 : 0;
 }
+
 /* ── /proc/stat per-core usage ──────────────────────────────────────── */
 
 static void read_core_usage(smu_metrics_t *m)
@@ -1010,6 +1012,101 @@ static float try_read_bclk(void)
     return (bclk >= 80.0f && bclk <= 120.0f) ? bclk : 0;
 }
 
+/* ── AOD electrical parameters (Granite Ridge / family 1Ah) ────────────
+ * Offsets and encodings ported from ZenStates-Core Hardware/Aod (MIT):
+ * the per-frequency block is located by finding the LAST occurrence of
+ * MemClk (u16 LE) in the raw AOD region; ProcODT/RTT/drive strengths are
+ * fixed deltas from it. */
+
+static uint32_t read_msr_u32(uint64_t addr, bool *ok)
+{
+    int fd = open("/dev/cpu/0/msr", O_RDONLY);
+    if (fd < 0) { if (ok) *ok = false; return 0; }
+    uint64_t v = 0;
+    ssize_t n = pread(fd, &v, sizeof(v), (off_t)addr);
+    close(fd);
+    if (n != (ssize_t)sizeof(v)) { if (ok) *ok = false; return 0; }
+    if (ok) *ok = true;
+    return (uint32_t)v; /* EAX */
+}
+
+#define AOD_REGION_BYTES 0x24BB
+
+static int read_aod_raw_table(uint8_t **out_buf, int *out_len)
+{
+    FILE *f = fopen("/sys/kernel/aod_voltages/full_raw", "rb");
+    if (!f) return 0;
+    uint8_t *buf = malloc(AOD_REGION_BYTES);
+    if (!buf) { fclose(f); return 0; }
+    size_t total = 0, n;
+    while (total < AOD_REGION_BYTES &&
+           (n = fread(buf + total, 1, AOD_REGION_BYTES - total, f)) > 0)
+        total += n;
+    fclose(f);
+    if (total < 1024) { free(buf); return 0; }
+    *out_buf = buf;
+    *out_len = (int)total;
+    return 1;
+}
+
+static void read_aod_electrical(int codename_idx, uint32_t mclk_mhz,
+                                aod_mem_info_t *info)
+{
+    memset(info, 0, sizeof(*info));
+    snprintf(info->layout, sizeof(info->layout), "n/a");
+
+    /* The relative Granite Ridge layout is only verified for 23 (Granite
+     * Ridge); other Zen5 parts would need their own layouts. */
+    if (codename_idx != 23) {
+        snprintf(info->layout, sizeof(info->layout),
+                 "no AOD electrical layout for this CPU");
+        return;
+    }
+
+    uint8_t *table = NULL;
+    int len = 0;
+    if (!read_aod_raw_table(&table, &len)) {
+        snprintf(info->layout, sizeof(info->layout),
+                 "AOD region unavailable (aod_voltages module?)");
+        return;
+    }
+
+    /* CPU patch level (MSR 0x8B, ZenStates-Core GetPatchLevel) selects the
+     * AGESA layout variant. Unknown → assume the newer one (0x1Bxxxxxx). */
+    bool patch_ok = false;
+    uint32_t patch = read_msr_u32(0x8B, &patch_ok);
+    bool patch_gt = !patch_ok || patch > 0x0B404022u;
+
+    /*
+     * hasRMP is a Windows-WMI-only fact in ZenStates-Core and unknowable on
+     * Linux; the two variants shift the ProcOdt/DS block by 12 bytes. Decode
+     * both and keep whichever yields plausible codes. Override with
+     * TUXTIMINGS_AOD_RMP=0/1 for validation.
+     */
+    const char *env = getenv("TUXTIMINGS_AOD_RMP");
+    aod_mem_info_t cand[2];
+    aod_mem_parse_granite_ridge(table, len, mclk_mhz, patch_gt, true,  &cand[0]);
+    aod_mem_parse_granite_ridge(table, len, mclk_mhz, patch_gt, false, &cand[1]);
+    free(table);
+
+    int pick;
+    if (env && (strcmp(env, "0") == 0 || strcmp(env, "1") == 0))
+        pick = (env[0] == '0') ? 1 : 0;   /* cand[0]=RMP, cand[1]=no-RMP */
+    else if (aod_mem_info_sanity(&cand[0]))
+        pick = 0;                        /* prefer RMP layout when plausible */
+    else if (aod_mem_info_sanity(&cand[1]))
+        pick = 1;
+    else
+        pick = 0;                        /* nothing plausible: report cand[0] */
+
+    *info = cand[pick];
+    if (patch_ok) {
+        char full[96];
+        snprintf(full, sizeof(full), "%s patch=0x%08X", info->layout, patch);
+        snprintf(info->layout, sizeof(info->layout), "%s", full);
+    }
+}
+
 /* ── Read PM table binary ───────────────────────────────────────────── */
 
 static int read_pm_table_raw(float **out_floats, int *out_count)
@@ -1094,17 +1191,6 @@ void backend_read_summary(system_summary_t *out)
         if (access("/sys/module/tuxbench", F_OK) == 0)
             s_loaded_tuxbench = 1;
 
-        /* Load nct6775 if no Nuvoton hwmon driver is active.
-         * Covers NCT6775F/6776F/6779D/6791D/6792D/6793D/
-         *        6795D/6796D/6797D/6798D/6799D — no-op if hardware absent. */
-        {
-            char hwmon_path[640];
-            if (!find_hwmon_by_name("nct6", hwmon_path, sizeof(hwmon_path))) {
-                snprintf(cmd, sizeof(cmd), "%s nct6775 2>/dev/null", mp);
-                run_shell(cmd);
-            }
-        }
-
         /* Load a board-sensor Super I/O driver if no fan-capable hwmon chip
          * is active yet. All attempts are auto-detecting loads (read-only
          * ID probes; no-op when the chip is absent). On some kernels nct6775
@@ -1176,7 +1262,6 @@ void backend_read_summary(system_summary_t *out)
     /* Modules (cached) */
     out->module_count = s_module_count;
     memcpy(out->modules, s_modules, s_module_count * sizeof(memory_module_t));
-
     /* PM table → metrics */
     float *pm_floats = NULL;
     int pm_count = 0;
@@ -1212,12 +1297,49 @@ void backend_read_summary(system_summary_t *out)
     read_core_usage(&out->metrics);
     read_core_freq(&out->metrics);
 
-    /* DRAM timings */
-    dram_read_timings(codename_idx, &out->dram);
+    /* DRAM timings — one entry per probed UMC instance (Zen 5: UMC0/UMC1) */
+    {
+        bool is_ddr5 = (codename_idx >= 20 && codename_idx <= 24);
+        float mem_hint = out->metrics.mclk_mhz > 0.0f ? out->metrics.mclk_mhz * 2.0f : 0.0f;
+        dram_read_channels(is_ddr5, mem_hint, out->metrics.bclk_mhz,
+                           out->channels, &out->channel_count);
+        out->present_channels = 0;
+        for (int i = 0; i < out->channel_count; i++)
+            if (out->channels[i].present) out->present_channels++;
+
+        /* Relate SMBIOS modules to UMC channels: the slot-label letter
+         * (A1/A2...) matches UMC instance i where offset(i<<20), the same
+         * convention ZenStates-Core's ReadChannelsNoLock uses for slot
+         * naming. */
+        for (int i = 0; i < s_module_count; i++) {
+            out->modules[i].channel_idx = -1;
+            char l = out->modules[i].slot_label[0];
+            if (!isalpha((unsigned char)l)) continue;
+            int letter = toupper((unsigned char)l) - 'A';
+            for (int c = 0; c < out->channel_count; c++) {
+                if (!out->channels[c].present) continue;
+                if ((int)(out->channels[c].smn_offset >> 20) == letter) {
+                    out->modules[i].channel_idx = (int16_t)c;
+                    break;
+                }
+            }
+        }
+    }
+
+    /* Electrical parameters from the AOD ACPI table (Granite Ridge) */
+    read_aod_electrical(codename_idx,
+                        (uint32_t)(out->metrics.mclk_mhz > 0.0f ? out->metrics.mclk_mhz : 0.0f),
+                        &out->aod);
 
     /* Memory config */
     out->memory.type = mem_type_for_codename(codename_idx);
-    float mem_freq = out->dram.frequency_hint_mhz;
+    float mem_freq = 0.0f;
+    for (int i = 0; i < out->channel_count; i++) {
+        if (out->channels[i].present && out->channels[i].t.frequency_hint_mhz > 0) {
+            mem_freq = out->channels[i].t.frequency_hint_mhz;
+            break;
+        }
+    }
 
     /* dmidecode "Configured Memory Speed" (MT/s) */
     uint32_t max_cfg = 0;
@@ -1291,6 +1413,225 @@ void backend_cleanup(void)
 
 /* ── Debug dump ─────────────────────────────────────────────────────── */
 
+/* One-line "%s: %u" for a decoded timing (used by the channel dump). */
+#define DT(lbl, val) \
+    do { off += (size_t)snprintf(buf + off, cap - off, "  %-18s %u\n", lbl, (unsigned)(val)); } while (0)
+#define DTS(lbl, s) \
+    do { off += (size_t)snprintf(buf + off, cap - off, "  %-18s %s\n", lbl, (s)); } while (0)
+#define DTF(lbl, fmt, ...) \
+    do { off += (size_t)snprintf(buf + off, cap - off, "  %-18s " fmt "\n", lbl, ##__VA_ARGS__); } while (0)
+
+static const char *YN(bool v) { return v ? "Enabled" : "Disabled"; }
+static const char *rank_str(int r) { return r == 2 ? "DR" : r == 1 ? "SR" : "N/A"; }
+
+static void dump_channel(char *buf, size_t cap, size_t *offp,
+                         const dram_channel_t *d, const umc_raw_regs_t *raw)
+{
+    size_t off = *offp;
+    DTS("Label", d->label);
+    DTF ("SMN offset", "0x%08X", d->smn_offset);
+    DTS("Channel present", d->present ? "yes" : "NO (absent/disabled)");
+    DTF ("SMN read failures", "%d", d->read_failures);
+    if (!d->present && d->read_failures == 0) {
+        DTF ("0x50DF0 raw", "0x%08X (bit19=%u -> %s)", raw->enabled,
+             (unsigned)bit_slice(raw->enabled, 19, 19),
+             bit_slice(raw->enabled, 19, 19) ? "channel disabled" : "enabled but no DIMMs");
+    }
+    if (d->present) {
+        DTF ("DIMM0 / DIMM1", "%s / %s", d->has_dimm[0] ? "installed" : "empty",
+             d->has_dimm[1] ? "installed" : "empty");
+        DTF ("Rank DIMM0/1", "%s / %s", rank_str(d->ranks[0]), rank_str(d->ranks[1]));
+        if (d->has_addr_cfg) {
+            DTF ("banks/BG/row/col", "%u/%u/%u/%u", d->num_banks, d->num_bank_groups,
+                 d->num_row, d->num_col);
+        }
+        DTF ("Ratio (MEMCLK)", "%.2f", (double)d->ratio);
+        DTF ("Speed", "%.0f MT/s", (double)d->t.frequency_hint_mhz);
+        DT ("tCL", d->t.tcl); DT ("tRCDRD", d->t.trcd_rd); DT ("tRCDWR", d->t.trcd_wr);
+        DT ("tRP", d->t.trp); DT ("tRPpb", d->rp_pb); DT ("tRAS", d->t.tras);
+        DT ("tRC", d->t.trc); DT ("tRCpb", d->rc_pb);
+        DT ("tRRDS", d->t.trrds); DT ("tRRDL", d->t.trrdl); DT ("tFAW", d->t.tfaw);
+        DT ("tWR", d->t.twr); DT ("tCWL", d->t.tcwl); DT ("tRTP", d->t.rtp);
+        DT ("tWTRS", d->t.wtrs); DT ("tWTRL", d->t.wtrl);
+        DT ("tRDWR", d->t.rdwr); DT ("tWRRD", d->t.wrrd); DT ("MW", d->mw);
+        DT ("tRDRDSC", d->t.rdrd_sc); DT ("tRDRDSD", d->t.rdrd_sd); DT ("tRDRDDD", d->t.rdrd_dd);
+        DT ("tRDRDSCL", d->t.rdrd_scl); DT ("tRDRDBan", d->rdrd_ban);
+        DT ("tWRWRSC", d->t.wrwr_sc); DT ("tWRWRSD", d->t.wrwr_sd); DT ("tWRWRDD", d->t.wrwr_dd);
+        DT ("tWRWRSCL", d->t.wrwr_scl); DT ("tWRWRBan", d->wrwr_ban);
+        DT ("tREFI", d->t.refi); DTF ("tREFI ns", "%.1f", (double)d->t.trefi_ns);
+        DT ("tRFC", d->t.rfc); DTF ("tRFC ns", "%.1f", (double)d->t.trfc_ns);
+        DT ("tRFC2", d->t.rfc2); DTF ("tRFC2 ns", "%.1f", (double)d->t.trfc2_ns);
+        DT ("tRFCsb", d->t.rfcsb); DTF ("tRFCsb ns", "%.1f", (double)d->t.trfcsb_ns);
+        DT ("tRDPRE", d->t.rdpre); DT ("tRDPOST", d->rdpost);
+        DT ("tWRPRE", d->t.wrpre); DT ("tWRPOST", d->wrpost);
+        DT ("tPPD", d->ppd); DT ("tTRCPAGE", d->t.trc_page);
+        DT ("tCKE", d->t.cke); DT ("tXP", d->t.xp); DT ("tCPDED", d->cpded);
+        DT ("tSTAG", d->t.stag); DT ("tSTAGsb", d->t.stag_sb);
+        DT ("tMOD", d->t.mod); DT ("tMODPDA", d->t.mod_pda);
+        DT ("tMRD", d->t.mrd); DT ("tMRDPDA", d->t.mrd_pda);
+        DT ("tMRRI", d->mrri); DT ("tMRR", d->mrr); DT ("tMRW", d->mrw);
+        DT ("CtrlSwitchClks", d->ctrl_switch_clks);
+        DT ("tCSH", d->csh); DT ("tCACSH", d->cacsh);
+        DT ("tSRX2SRX", d->srx2srx); DT ("tSTAB", d->tstab);
+        DT ("tDLLK", d->dllk); DT ("tXS", d->xs);
+        DT ("tZQCS", d->tzqcs); DT ("tZQOPER", d->tzq_oper_cal);
+        DT ("ZQCSInterval", d->zqcs_interval); DT ("ShortInit", d->short_init);
+        DT ("RankBusyDly", d->rank_busy_dly); DT ("CmdParLatency", d->cmd_par_latency);
+        DT ("AlertParDly", d->alert_par_dly); DT ("AlertCrcDly", d->alert_crc_dly);
+        DT ("AlertParPulse", d->alert_par_pulse); DT ("AlertCrcPulse", d->alert_crc_pulse);
+        DT ("PARINL", d->parinl); DT ("RDDATAEN", d->rddataen);
+        DT ("LpDly", d->lp_dly); DT ("LpExitDly", d->lp_exit_dly);
+        DT ("WrBrstGap", d->wrbrst_gap); DT ("RdBrstGap", d->rdbrst_gap);
+        DT ("WrPhChk", d->wr_ph_chk);
+        DT ("WRMPR", d->wrmpr); DT ("CmdStgCnt", d->cmd_stg_cnt); DT ("RcvrWait", d->rcvr_wait);
+        DT ("PHYWRD", d->t.phy_wrd); DT ("PHYWRL", d->t.phy_wrl); DT ("PHYRDL", d->t.phy_rdl);
+        DTF ("PHYUPD cmd/wrdat/resp", "%u/%u/%u", d->phyupd_cmd_dly,
+             d->phyupd_wrdat_dly, d->phyupd_resp);
+        DT ("ECSc", d->ecsc);
+        if (d->ccdl_wr2_valid) DT ("CcdlWr2", d->ccdl_wr2);
+        DT ("DdrMaxRate", d->ddr_max_rate); DT ("DdrMaxRateEnf", d->ddr_max_rate_enf);
+        DT ("AggrPwrDownDly", d->aggr_pwr_down_dly); DT ("PwrDownDly", d->pwr_down_dly);
+        DT ("PD", d->pd);
+        /* config */
+        DTS("GDM", YN(d->t.gdm_enabled));
+        DTS("Cmd2T", d->t.cmd2t[0] ? d->t.cmd2t : "N/A");
+        DTS("PowerDown", YN(d->t.power_down_enabled));
+        DTS("PowerDownMode", d->power_down_mode[0] ? d->power_down_mode : "N/A");
+        DTS("AggrPowerDown", YN(d->aggressive_power_down));
+        DTS("RefreshMode", d->refresh_mode[0] ? d->refresh_mode : "N/A");
+        DT ("FGR", d->fgr);
+        DTS("BGS", YN(d->bgs));
+        DTS("BGSAlt", YN(d->bgs_alt));
+        DTS("BankGroupEn", YN(d->bank_group_en));
+        DTS("ECC", YN(d->ecc_enabled));
+        DTS("BurstLength", d->burst_length[0] ? d->burst_length : "N/A");
+        DTS("BurstCtrl", d->burst_ctrl[0] ? d->burst_ctrl : "N/A");
+        DTS("ODTS", YN(d->odts_en));
+        DT ("OdtsCmdThrotCyc", d->odts_cmd_throt_cyc);
+        DT ("OdtsReadInterval", d->odts_read_interval);
+        DT ("RollWindowDepth", d->roll_window_depth);
+        DTS("WCK:CK", d->wck_ck_ratio);
+        DT ("UclkGtFclk", d->uclk_gt_fclk);
+        DTS("Nitro (rx/tx/ctrl)", d->nitro_rx_tx_ctrl[0] ? d->nitro_rx_tx_ctrl : "N/A");
+        DTS("Nitro DlyMode", d->nitro_dly_mode[0] ? d->nitro_dly_mode : "N/A");
+    }
+    *offp = off;
+}
+
+static void dump_channel_raw(char *buf, size_t cap, size_t *offp,
+                             uint32_t base, const umc_raw_regs_t *raw)
+{
+    static const struct { uint32_t reg; size_t off; const char *name; } tbl[] = {
+        { 0x50DF0, offsetof(umc_raw_regs_t, enabled),       "ENABLED/DDRMAXRATE" },
+        { 0x50DF4, offsetof(umc_raw_regs_t, regDF4),        "DDRRATEENF" },
+        { 0x50000, offsetof(umc_raw_regs_t, dimm0_config),  "DIMM0/CS0_CFG" },
+        { 0x50004, offsetof(umc_raw_regs_t, cs1_cfg),       "CS1_CFG" },
+        { 0x50008, offsetof(umc_raw_regs_t, dimm1_config),  "DIMM1/CS2_CFG" },
+        { 0x5000C, offsetof(umc_raw_regs_t, cs3_cfg),       "CS3_CFG" },
+        { 0x50020, offsetof(umc_raw_regs_t, rank0_mask[0]), "RANK0_MASK0" },
+        { 0x50024, offsetof(umc_raw_regs_t, rank0_mask[1]), "RANK0_MASK1" },
+        { 0x50028, offsetof(umc_raw_regs_t, rank1_mask[0]), "RANK1_MASK0" },
+        { 0x5002C, offsetof(umc_raw_regs_t, rank1_mask[1]), "RANK1_MASK1" },
+        { 0x50040, offsetof(umc_raw_regs_t, addr_cfg0),     "ADDR_CFG0" },
+        { 0x50048, offsetof(umc_raw_regs_t, addr_cfg1),     "ADDR_CFG1" },
+        { 0x50050, offsetof(umc_raw_regs_t, bgs0),          "BGS0" },
+        { 0x50058, offsetof(umc_raw_regs_t, bgs1),          "BGS1" },
+        { 0x500D0, offsetof(umc_raw_regs_t, bgs_alt0),      "BGS_ALT0" },
+        { 0x500D4, offsetof(umc_raw_regs_t, bgs_alt1),      "BGS_ALT1" },
+        { 0x50100, offsetof(umc_raw_regs_t, ecc_burst),     "ECC/BURST" },
+        { 0x5012C, offsetof(umc_raw_regs_t, pwrdownctrl),   "PWRDOWNCTRL" },
+        { 0x50130, offsetof(umc_raw_regs_t, odtsctrl),      "ODTSCTRL" },
+        { 0x50198, offsetof(umc_raw_regs_t, brstgap),       "BRSTGAP" },
+        { 0x50200, offsetof(umc_raw_regs_t, umcratio),      "UMCRATIO" },
+        { 0x50204, offsetof(umc_raw_regs_t, reg204),        "TIMING1" },
+        { 0x50208, offsetof(umc_raw_regs_t, reg208),        "TIMING2" },
+        { 0x5020C, offsetof(umc_raw_regs_t, reg20C),        "TIMING3" },
+        { 0x50210, offsetof(umc_raw_regs_t, reg210),        "FAW" },
+        { 0x50214, offsetof(umc_raw_regs_t, reg214),        "CW/WTR" },
+        { 0x50218, offsetof(umc_raw_regs_t, reg218),        "WR" },
+        { 0x5021C, offsetof(umc_raw_regs_t, reg21C),        "TRCPAGE/PPD" },
+        { 0x50220, offsetof(umc_raw_regs_t, reg220),        "RDRD" },
+        { 0x50224, offsetof(umc_raw_regs_t, reg224),        "WRWR" },
+        { 0x50228, offsetof(umc_raw_regs_t, reg228),        "RDWR/WRRD/MW" },
+        { 0x5022C, offsetof(umc_raw_regs_t, reg22C),        "ZQ" },
+        { 0x50230, offsetof(umc_raw_regs_t, reg230),        "REFI/ODTSINT" },
+        { 0x50234, offsetof(umc_raw_regs_t, reg234),        "MOD/MRD" },
+        { 0x50238, offsetof(umc_raw_regs_t, reg238),        "DLLK/XS" },
+        { 0x5023C, offsetof(umc_raw_regs_t, reg23C),        "RANKBUSY/ALERT" },
+        { 0x50240, offsetof(umc_raw_regs_t, reg240),        "MRR/MRW" },
+        { 0x50244, offsetof(umc_raw_regs_t, reg244),        "PWRDOWN DLY" },
+        { 0x50248, offsetof(umc_raw_regs_t, reg248),        "SRX2SRX/STAB" },
+        { 0x5024C, offsetof(umc_raw_regs_t, reg24C),        "ALERT PULSE" },
+        { 0x50250, offsetof(umc_raw_regs_t, reg250),        "STAG" },
+        { 0x50254, offsetof(umc_raw_regs_t, reg254),        "CKE/XP/CACSH" },
+        { 0x50258, offsetof(umc_raw_regs_t, reg258),        "PHY/PARINL" },
+        { 0x5025C, offsetof(umc_raw_regs_t, reg25C),        "LP DLY" },
+        { 0x50260, offsetof(umc_raw_regs_t, trfc[0]),       "TRFC0" },
+        { 0x50264, offsetof(umc_raw_regs_t, trfc[1]),       "TRFC1" },
+        { 0x50268, offsetof(umc_raw_regs_t, trfc[2]),       "TRFC2" },
+        { 0x5026C, offsetof(umc_raw_regs_t, trfc[3]),       "TRFC3" },
+        { 0x50284, offsetof(umc_raw_regs_t, reg284),        "NITRO" },
+        { 0x50288, offsetof(umc_raw_regs_t, reg288),        "PHYUPD" },
+        { 0x5028C, offsetof(umc_raw_regs_t, reg28C),        "WRMPR/RCVR" },
+        { 0x502A4, offsetof(umc_raw_regs_t, reg2A4),        "RD/WR PRE/POST" },
+        { 0x502A8, offsetof(umc_raw_regs_t, reg2A8),        "ECSc" },
+        { 0x502C0, offsetof(umc_raw_regs_t, rfcsb[0]),      "RFCSB0" },
+        { 0x502C4, offsetof(umc_raw_regs_t, rfcsb[1]),      "RFCSB1" },
+        { 0x502C8, offsetof(umc_raw_regs_t, rfcsb[2]),      "RFCSB2" },
+        { 0x502CC, offsetof(umc_raw_regs_t, rfcsb[3]),      "RFCSB3" },
+        { 0x502E0, offsetof(umc_raw_regs_t, reg2E0),        "CCDL WR2" },
+    };
+    size_t off = *offp;
+    for (size_t i = 0; i < sizeof(tbl) / sizeof(tbl[0]); i++) {
+        uint32_t v;
+        memcpy(&v, (const uint8_t *)raw + tbl[i].off, sizeof(v));
+        off += (size_t)snprintf(buf + off, cap - off, "  0x%05X (smn 0x%06X) %-19s 0x%08X\n",
+                                tbl[i].reg, base | tbl[i].reg, tbl[i].name, v);
+        if (off + 256 >= cap) break;
+    }
+    *offp = off;
+}
+
+static void dump_electrical(char *buf, size_t cap, size_t *offp, const aod_mem_info_t *a)
+{
+    size_t off = *offp;
+    DTS("AOD layout", a->layout);
+    DTF ("AOD freq base", "%d", a->base);
+    if (!a->available) {
+        DTS("Electrical", "N/A — see layout line above");
+        *offp = off;
+        return;
+    }
+    char tmp[48];
+#define EL(lbl, has, raw, fn) \
+    do { if (has) { DTS(lbl, fn(raw)); DTF(lbl " raw", "0x%X", (unsigned)(raw)); } \
+         else DTS(lbl, "N/A"); } while (0)
+#define ELR(lbl, has, raw) \
+    do { if (has) { rtt_decode((raw), tmp, sizeof(tmp)); DTS(lbl, tmp); \
+                    DTF(lbl " raw", "0x%X", (unsigned)(raw)); } \
+         else DTS(lbl, "N/A"); } while (0)
+    EL("ProcODT",         a->has_proc_odt,     a->proc_odt_raw,     proc_odt_decode);
+    EL("ProcODT PullUp",  a->has_proc_odt_pu,  a->proc_odt_pu_raw,  proc_odt_decode);
+    EL("ProcODT PullDown",a->has_proc_odt_pd,  a->proc_odt_pd_raw,  proc_odt_decode);
+    ELR("RTT Nom WR",     a->has_rtt_nom_wr,   a->rtt_nom_wr_raw);
+    ELR("RTT Nom RD",     a->has_rtt_nom_rd,   a->rtt_nom_rd_raw);
+    ELR("RTT WR",         a->has_rtt_wr,       a->rtt_wr_raw);
+    ELR("RTT Park",       a->has_rtt_park,     a->rtt_park_raw);
+    ELR("RTT Park DQS",   a->has_rtt_park_dqs, a->rtt_park_dqs_raw);
+    EL("CADBUS DrvStren", a->has_cad_bus_ds,   a->cad_bus_ds_raw,   cad_bus_ds_decode);
+    EL("Proc Data DQ DS", a->has_proc_data_ds, a->proc_data_ds_raw, proc_data_ds_decode);
+    EL("ProcDqDs PullUp", a->has_proc_dq_ds_pu,a->proc_dq_ds_pu_raw,proc_data_ds_decode);
+    EL("ProcDqDs PullDn", a->has_proc_dq_ds_pd,a->proc_dq_ds_pd_raw,proc_data_ds_decode);
+    EL("ProcCsDs",        a->has_proc_cs_ds,   a->proc_cs_ds_raw,   proc_impedance_decode);
+    EL("ProcCkDs",        a->has_proc_ck_ds,   a->proc_ck_ds_raw,   proc_impedance_decode);
+    EL("Dram Data DS",    a->has_dram_data_ds, a->dram_data_ds_raw, dram_data_ds_decode);
+    EL("DramDqDs PullUp", a->has_dram_dq_ds_pu,a->dram_dq_ds_pu_raw,dram_data_ds_decode);
+    EL("DramDqDs PullDn", a->has_dram_dq_ds_pd,a->dram_dq_ds_pd_raw,dram_data_ds_decode);
+#undef EL
+#undef ELR
+    *offp = off;
+}
+
 char *backend_read_debug_dump(void)
 {
     /* Allocate a large enough buffer (PM table can be ~2000 entries * ~20 chars) */
@@ -1357,6 +1698,91 @@ char *backend_read_debug_dump(void)
             free(t);
         } else {
             DUMP("(PM table unavailable)\n");
+        }
+    }
+
+    /* ── DRAM: UMC topology, per-channel decode, raw registers ──── */
+    DUMP("\n=== DRAM / UMC ===\n");
+    {
+        int codename_idx = read_codename_index();
+        bool is_ddr5 = (codename_idx >= 20 && codename_idx <= 24);
+        DUMP("CPU:            %s (SMU codename %d, %s)\n",
+             map_codename(codename_idx), codename_idx,
+             is_ddr5 ? "DDR5 class" : "DDR4 class");
+        bool patch_ok = false;
+        uint32_t patch = read_msr_u32(0x8B, &patch_ok);
+        if (patch_ok)
+            DUMP("Patch level:    0x%08X%s\n", patch,
+                 patch > 0x0B404022u ? " (> 0xB404022: new AOD layout)" : "");
+        else
+            DUMP("Patch level:    N/A (MSR 0x8B unreadable)\n");
+
+        if (!dram_smn_open()) {
+            DUMP("SMN:            UNAVAILABLE (%s not readable)\n", "/sys/kernel/ryzen_smu_drv/smn");
+        } else {
+            static dram_channel_t chans[MAX_UMC_CHANNELS];
+            int chan_count = 0;
+            dram_read_channels(is_ddr5, 0.0f, 0.0f, chans, &chan_count);
+            DUMP("UMC instances probed: %d (SMN offsets 0x000000, 0x100000, ...)\n\n", chan_count);
+            for (int i = 0; i < chan_count; i++) {
+                DUMP("--- %s ---\n", chans[i].label);
+                dump_channel(buf, cap, &off, &chans[i], &chans[i].raw);
+                if (chans[i].present) {
+                    DUMP("\n  Raw registers:\n");
+                    dump_channel_raw(buf, cap, &off, chans[i].smn_offset, &chans[i].raw);
+                }
+                DUMP("\n");
+                if (off + 8192 >= cap) break;
+            }
+            DUMP("SMBIOS modules (inputs to physical-slot pairing):\n");
+            for (int i = 0; i < s_module_count; i++) {
+                DUMP("  [%d] slot=%-6s bank='%s' locator='%s'\n", i,
+                     s_modules[i].slot_label, s_modules[i].bank_label,
+                     s_modules[i].device_locator);
+            }
+            DUMP("\n");
+        }
+
+        static aod_mem_info_t aod;
+        read_aod_electrical(codename_idx, 3000 /* MCLK hint fallback */, &aod);
+        /* Retry with the PM-table MCLK when it is available */
+        {
+            float *t = NULL; int c = 0;
+            uint32_t pm_ver = read_smu_uint32("pm_table_version");
+            smu_metrics_t m; memset(&m, 0, sizeof(m));
+            if (read_pm_table_raw(&t, &c)) {
+                pm_table_read(pm_ver, t, c, -1, &m);
+                free(t);
+            }
+            if (m.mclk_mhz > 0)
+                read_aod_electrical(codename_idx, (uint32_t)m.mclk_mhz, &aod);
+        }
+        DUMP("=== Electrical (AOD) ===\n");
+        dump_electrical(buf, cap, &off, &aod);
+    }
+
+    /* ── hwmon inventory (fan/thermal chip visibility) ──────────── */
+    DUMP("\n=== hwmon devices ===\n");
+    {
+        DIR *hw = opendir("/sys/class/hwmon");
+        if (!hw) {
+            DUMP("(cannot open /sys/class/hwmon)\n");
+        } else {
+            struct dirent *e;
+            while ((e = readdir(hw))) {
+                if (e->d_name[0] == '.') continue;
+                char p[640], nm[64];
+                snprintf(p, sizeof(p), "/sys/class/hwmon/%s/name", e->d_name);
+                if (!read_file_string(p, nm, sizeof(nm))) continue;
+                int fans = 0;
+                for (int i = 1; i <= 15; i++) {
+                    char fp[640];
+                    snprintf(fp, sizeof(fp), "/sys/class/hwmon/%s/fan%d_input", e->d_name, i);
+                    if (read_int_file(fp) > 0) fans++;
+                }
+                DUMP("%-8s %-24s fan_inputs=%d\n", e->d_name, nm, fans);
+            }
+            closedir(hw);
         }
     }
 

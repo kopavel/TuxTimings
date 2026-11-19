@@ -16,3 +16,6 @@ pm_dumps/
 
 # Sources
 sources/*
+
+# build artifacts
+Linux/tests/test_decode

@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "dram_decode.h"
 
 #define MAX_CORES       16
 #define MAX_MODULES     4
@@ -26,6 +27,7 @@ typedef struct {
     char slot_label[24];   /* e.g. "A1", "Slot 0" */
     char slot_display[64]; /* e.g. "A1 - 16.0 GiB" */
     char capacity_display[32]; /* e.g. "16.0 GiB" */
+    int16_t channel_idx;   /* entry in system_summary_t.channels, -1 = unknown */
 } memory_module_t;
 
 typedef struct {
@@ -87,30 +89,9 @@ typedef struct {
     int   spd_temps_count;
 } smu_metrics_t;
 
-typedef struct {
-    /* Primary */
-    uint32_t tcl, trcd_rd, trcd_wr, trp, tras, trc;
-    /* Secondary */
-    uint32_t trrds, trrdl, tfaw, twr, tcwl;
-    uint32_t rtp, wtrs, wtrl, rdwr, wrrd;
-    uint32_t rdrd_scl, wrwr_scl;
-    uint32_t rdrd_sc, rdrd_sd, rdrd_dd;
-    uint32_t wrwr_sc, wrwr_sd, wrwr_dd;
-    uint32_t refi, wrpre, rdpre;
-    /* Tertiary */
-    uint32_t trc_page, mod, mod_pda, mrd, mrd_pda;
-    uint32_t stag, stag_sb, cke, xp;
-    uint32_t phy_wrd, phy_wrl, phy_rdl;
-    /* RFC */
-    uint32_t rfc, rfc2, rfcsb;
-    /* Nanoseconds */
-    float trefi_ns, trfc_ns;
-    float trfc2_ns, trfcsb_ns; /* reserved — computed but not displayed */
-    /* Flags */
-    bool gdm_enabled, power_down_enabled;
-    char cmd2t[4];
-    float frequency_hint_mhz;
-} dram_timings_t;
+
+/* dram_timings_t moved verbatim to dram_decode.h (per-channel structs embed
+ * it); that header is included at the top. */
 
 typedef struct {
     char label[16];
@@ -124,7 +105,11 @@ typedef struct {
     memory_module_t modules[MAX_MODULES];
     int module_count;
     smu_metrics_t metrics;
-    dram_timings_t dram;
+    /* Per-UMC-instance memory channels (decoded in dram_decode.c) */
+    dram_channel_t channels[MAX_UMC_CHANNELS];
+    int channel_count;      /* probed instances (present flag per entry) */
+    int present_channels;   /* how many report DIMMs */
+    aod_mem_info_t aod;     /* electrical parameters from ACPI AOD table */
     fan_reading_t fans[MAX_FANS];
     int fan_count;
 } system_summary_t;

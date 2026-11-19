@@ -25,7 +25,14 @@ kmod-install: kmod
 kmod-clean:
 	$(MAKE) -C src/tuxbench clean
 
-clean: kmod-clean
-	rm -f src/*.o $(TARGET)
+# Unit tests for the pure register decoder (no hardware access)
+test: tests/test_decode
+	./tests/test_decode
 
-.PHONY: all clean kmod kmod-install kmod-clean
+tests/test_decode: tests/test_decode.c src/dram_decode.c src/util.c
+	$(CC) -Wall -Wextra -O1 -o $@ $^ -lm
+
+clean: kmod-clean
+	rm -f src/*.o $(TARGET) tests/test_decode
+
+.PHONY: all clean kmod kmod-install kmod-clean test

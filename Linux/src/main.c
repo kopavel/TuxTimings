@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <locale.h>
 #include <signal.h>
+#include <sys/stat.h>
 
 static void on_signal(int sig)
 {
@@ -49,12 +50,17 @@ static int restore_env(int *argc, char ***argv)
 static void elevate_if_necessary(int argc, char **argv)
 {
     if (geteuid() == 0) return;
+    /* Dev/QA mode: exercise the UI without SMU access and without pkexec */
+    if (getenv("TUXTIMINGS_ALLOW_NO_BACKEND")) return;
 
     /* Build argv for pkexec: pkexec <self> --env-VAR=VALUE ... [original args] */
+    /* DBUS_SESSION_BUS_ADDRESS is deliberately NOT forwarded: as root we are
+     * refused by the user's session bus, and the failed connection just
+     * produces a startup warning ("Unable to acquire session bus"). */
     const char *env_vars[] = {
         "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XAUTHORITY",
-        "DBUS_SESSION_BUS_ADDRESS", "XDG_CONFIG_HOME", "HOME",
-        "TUXTIMINGS_NCT_FORCE_ID", NULL
+        "XDG_CONFIG_HOME", "HOME",
+        "TUXTIMINGS_AOD_RMP", "TUXTIMINGS_NCT_FORCE_ID", NULL
     };
 
     /* Count env args */
@@ -78,9 +84,14 @@ static void elevate_if_necessary(int argc, char **argv)
     if (len <= 0) { free(new_argv); return; }
     self[len] = '\0';
 
-    /* Prefer installed path for polkit policy match */
+    /* Prefer installed path for polkit policy match — but never an older
+     * build than the one being run, or dev builds silently launch the stale
+     * system copy. */
     const char *installed = "/opt/TuxTimings/bin/tuxtimings";
-    if (access(installed, X_OK) == 0)
+    struct stat st_self, st_inst;
+    if (access(installed, X_OK) == 0 &&
+        stat(self, &st_self) == 0 && stat(installed, &st_inst) == 0 &&
+        st_inst.st_mtim.tv_sec >= st_self.st_mtim.tv_sec)
         new_argv[n++] = (char *)installed;
     else
         new_argv[n++] = self;
@@ -128,7 +139,7 @@ int main(int argc, char *argv[])
     /* Force C locale for numeric formatting (dots, not commas) */
     setlocale(LC_NUMERIC, "C");
 
-    if (!backend_is_supported()) {
+    if (!backend_is_supported() && !getenv("TUXTIMINGS_ALLOW_NO_BACKEND")) {
         fprintf(stderr, "TuxTimings: ryzen_smu driver not found at /sys/kernel/ryzen_smu_drv/\n"
                         "Please install the ryzen_smu kernel module.\n");
         return 1;

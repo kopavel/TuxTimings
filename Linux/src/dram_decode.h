@@ -100,7 +100,7 @@ typedef struct {
     uint32_t rfc, rfc2, rfcsb;
     /* Nanoseconds */
     float trefi_ns, trfc_ns;
-    float trfc2_ns, trfcsb_ns; /* reserved — computed but not displayed */
+    float trfc2_ns, trfcsb_ns; /* trfc2_ns also shown as the FGR figure on the tRFC (ns) row */
     /* Flags */
     bool gdm_enabled, power_down_enabled;
     char cmd2t[4];

@@ -416,10 +416,11 @@ void dram_read_channels(bool is_ddr5, float mem_speed_hint_mhz, float bclk_mhz,
             d->t.trfc_ns   = clocks_to_ns(d->t.rfc, mtaps);
             d->t.trfc2_ns  = clocks_to_ns(d->t.rfc2, mtaps);
             d->t.trfcsb_ns = clocks_to_ns(d->t.rfcsb, mtaps);
-            /* Ddr5Timings.RFCns: non-normal refresh modes report tRFC2 */
-            if (is_ddr5 && d->refresh_mode[0] &&
-                strcmp(d->refresh_mode, "NORMAL") != 0)
-                d->t.trfc_ns = clocks_to_ns(d->t.rfc2, mtaps);
+            /* NB: ZenStates-Core Ddr5Timings.RFCns silently substitutes the
+             * tRFC2 value into tRFC (ns) whenever refresh mode != NORMAL
+             * (FGR is effectively always on for DDR5). We keep trfc_ns
+             * consistent with the tRFC nCK shown beside it; ui.c displays
+             * the FGR figure separately. */
         }
         (*chan_count)++;
     }
@@ -436,9 +437,7 @@ void dram_rescale_ns(dram_channel_t *chans, int chan_count, float mtaps)
         d->t.trfc_ns   = clocks_to_ns(d->t.rfc, mtaps);
         d->t.trfc2_ns  = clocks_to_ns(d->t.rfc2, mtaps);
         d->t.trfcsb_ns = clocks_to_ns(d->t.rfcsb, mtaps);
-        if (d->is_ddr5 && d->refresh_mode[0] &&
-            strcmp(d->refresh_mode, "NORMAL") != 0)
-            d->t.trfc_ns = clocks_to_ns(d->t.rfc2, mtaps);
+        /* No FGR/tRFC2 substitution here either — see dram_read_channels. */
     }
 }
 

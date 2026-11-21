@@ -1212,7 +1212,12 @@ static void refresh_ui(app_widgets_t *w)
     set_u(w->lbl_tfaw, d, d ? d->t.tfaw : 0);
     set_u(w->lbl_twr, d, d ? d->t.twr : 0);
     set_u(w->lbl_tcwl, d, d ? d->t.tcwl : 0);
-    set_f(w->lbl_trfc_ns, d, d ? d->t.trfc_ns : 0);
+    if (d && d->is_ddr5 && d->t.rfc2 && d->refresh_mode[0] &&
+        strcmp(d->refresh_mode, "NORMAL") != 0)
+        set_label_fmt(w->lbl_trfc_ns, "%.0f  (tRFC2: %.0f)",
+                      (double)d->t.trfc_ns, (double)d->t.trfc2_ns);
+    else
+        set_f(w->lbl_trfc_ns, d, d ? d->t.trfc_ns : 0);
     set_u(w->lbl_rfc, d, d ? d->t.rfc : 0);
     set_u(w->lbl_rfc2, d, d ? d->t.rfc2 : 0);
     set_u(w->lbl_rfcsb, d, d ? d->t.rfcsb : 0);

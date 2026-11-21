@@ -8,10 +8,13 @@
 #include <signal.h>
 #include <sys/stat.h>
 
+static void stop_private_bus(void);   /* fwd — defined with the bus helper */
+
 static void on_signal(int sig)
 {
     (void)sig;
     backend_cleanup();
+    stop_private_bus();
     _exit(0);
 }
 
@@ -126,6 +129,49 @@ static void elevate_if_necessary(int argc, char **argv)
     exit(1);
 }
 
+/* ── Private session bus fallback ──────────────────────────────────────
+ * The pkexec'd root copy has no DBUS_SESSION_BUS_ADDRESS by design (the
+ * user's session bus refuses root connections). GTK4 then asks GDBus to
+ * autolaunch a bus via `dbus-launch`, which does not exist on systems
+ * where that helper was dropped — producing one startup warning:
+ *   Gtk-WARNING: Unable to acquire session bus: Failed to execute child
+ *   process "dbus-launch" (No such file or directory)
+ * GTK keeps working without the bus (it is only needed for portals /
+ * session registration), so this is cosmetic — but we can silence it
+ * honestly: start a private, TuxTimings-only dbus-daemon session bus and
+ * tear it down on exit. Never touches an existing session bus (normal
+ * user runs are unaffected). */
+static pid_t s_bus_pid = 0;
+
+static void stop_private_bus(void)
+{
+    if (s_bus_pid > 0) {
+        kill(s_bus_pid, SIGTERM);
+        s_bus_pid = 0;
+    }
+}
+
+static void ensure_session_bus(void)
+{
+    if (getenv("DBUS_SESSION_BUS_ADDRESS"))
+        return;
+
+    FILE *p = popen("dbus-daemon --session --fork --print-address=1 "
+                    "--print-pid=1 --nopidfile 2>/dev/null", "r");
+    if (!p)
+        return;
+    char addr[512], pidbuf[32];
+    /* prints the address, then the daemon's pid (it forks off) */
+    if (fgets(addr, sizeof(addr), p) && strncmp(addr, "unix:", 5) == 0 &&
+        fgets(pidbuf, sizeof(pidbuf), p)) {
+        addr[strcspn(addr, "\r\n")] = '\0';
+        setenv("DBUS_SESSION_BUS_ADDRESS", addr, 1);
+        long pid = strtol(pidbuf, NULL, 10);
+        if (pid > 0) s_bus_pid = (pid_t)pid;
+    }
+    pclose(p);
+}
+
 /* ── Main ───────────────────────────────────────────────────────────── */
 
 int main(int argc, char *argv[])
@@ -135,6 +181,7 @@ int main(int argc, char *argv[])
 
     restore_env(&argc, &argv);
     elevate_if_necessary(argc, argv);
+    ensure_session_bus();
 
     /* Force C locale for numeric formatting (dots, not commas) */
     setlocale(LC_NUMERIC, "C");
@@ -149,5 +196,6 @@ int main(int argc, char *argv[])
     int status = g_application_run(G_APPLICATION(app), argc, argv);
     g_object_unref(app);
     backend_cleanup();
+    stop_private_bus();
     return status;
 }

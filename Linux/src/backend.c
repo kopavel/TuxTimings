@@ -2,6 +2,7 @@
 #include "pm_table.h"
 #include "dram.h"
 #include "util.h"
+#include "spd_decode.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -75,6 +76,12 @@ static char s_bios_date[STR_SHORT];
 static char s_agesa_version[STR_LEN];
 static memory_module_t s_modules[MAX_MODULES];
 static int  s_module_count;
+
+/* ── SPD cache (static: DIMM SPD EEPROM contents, decoded once) ──────── */
+#define SPD_SLOTS MAX_MODULES
+static backend_spd_entry_t s_spd[SPD_SLOTS];
+static int  s_spd_count;
+static int  s_spd_loaded;
 
 /* Previous /proc/stat per-logical-cpu times for usage delta */
 #define MAX_LOGICAL_CPUS 256
@@ -1259,6 +1266,111 @@ static void resolve_module_slots(memory_module_t *mods, int nmods,
             break;
         }
     }
+}
+
+/* ── SPD profile access ─────────────────────────────────────────────── */
+
+/* Fill an entry from a raw image. Module identity is NOT cached here —
+ * dmidecode may not have run yet at load time; backend_spd_get() pairs
+ * entries to SMBIOS modules lazily (serial, else unique part number). */
+static void spd_entry_fill(backend_spd_entry_t *e, const uint8_t *img, size_t len)
+{
+    e->image_len = (int)len;
+    e->module_idx = -1;
+    e->decode_ok = spd_decode_ddr5(img, len, &e->info);
+}
+
+int backend_spd_load(void)
+{
+    if (s_spd_loaded)
+        return s_spd_count;
+    s_spd_loaded = 1;
+    s_spd_count = 0;
+
+    DIR *dir = opendir("/sys/bus/i2c/devices");
+    if (!dir)
+        return 0;
+    struct dirent *ent;
+    while ((ent = readdir(dir)) && s_spd_count < MAX_MODULES) {
+        int bus, addr;
+        if (sscanf(ent->d_name, "%d-%x", &bus, &addr)  /* sysfs addr is HEX */ != 2)
+            continue;
+        /* DDR5 SPD5118 hubs sit at 0x50..0x57 (only those are DDR5; DDR4
+         * hubs used 0x50.. on a 1.8 V bus we do not touch). */
+        if (addr < 0x50 || addr > 0x57)
+            continue;
+        char path[256];
+        snprintf(path, sizeof(path), "/sys/bus/i2c/devices/%s/eeprom",
+                 ent->d_name);
+        FILE *f = fopen(path, "rb");
+        if (!f)
+            continue;
+        uint8_t img[SPD_IMAGE_MAX];
+        size_t len = fread(img, 1, sizeof(img), f);
+        fclose(f);
+        if (len < SPD_IMAGE_MIN)
+            continue;
+        /* Skip non-DDR5 images before claiming a slot */
+        if (len > 2 && img[2] != 0x12)
+            continue;
+        backend_spd_entry_t *e = &s_spd[s_spd_count];
+        memset(e, 0, sizeof(*e));
+        snprintf(e->source, sizeof(e->source), "%s", path);
+        snprintf(e->slot_label, sizeof(e->slot_label), "i2c-%d.%02X",
+                 bus, addr);
+        spd_entry_fill(e, img, len);
+        s_spd_count++;
+    }
+    closedir(dir);
+
+    /* Deterministic order: sort by (bus, i2c address). JEDEC wires SPD5118
+     * hub addresses in physical DIMM order (0x50+2d = DIMM d), so this is
+     * the only stable slot-order signal available without reliable serial
+     * pairing. */
+    for (int i = 1; i < s_spd_count; i++) {
+        backend_spd_entry_t key = s_spd[i];
+        int kb, ka; sscanf(key.source, "/sys/bus/i2c/devices/%d-%x", &kb, &ka);
+        int j = i - 1;
+        for (;;) {
+            int jb, ja; sscanf(s_spd[j].source, "/sys/bus/i2c/devices/%d-%x", &jb, &ja);
+            if (j < 0 || jb < kb || (jb == kb && ja <= ka)) break;
+            s_spd[j + 1] = s_spd[j];
+            j--;
+            if (j < 0) break;
+        }
+        s_spd[j + 1] = key;
+    }
+    return s_spd_count;
+}
+
+const backend_spd_entry_t *backend_spd_get(int i)
+{
+    int live = backend_spd_load();
+    if (i < 0 || i >= live)
+        return NULL;
+
+    backend_spd_entry_t *e = &s_spd[i];
+    if (e->decode_ok && e->module_idx < 0 && s_module_count > 0) {
+        uint32_t ser = e->info.manufacturing.serial;
+        char cand[4][16];
+        snprintf(cand[0], sizeof(cand[0]), "%u",   ser);  /* SMBIOS default */
+        snprintf(cand[1], sizeof(cand[1]), "%08X", ser);  /* Kingston-style */
+        snprintf(cand[2], sizeof(cand[2]), "%X",   ser);
+        snprintf(cand[3], sizeof(cand[3]), "%08x", ser);
+        for (int m = 0; m < s_module_count; m++) {
+            const memory_module_t *mm = &s_modules[m];
+            if (!mm->serial_number[0]) continue;
+            for (int f = 0; f < 4; f++)
+                if (strcasecmp(mm->serial_number, cand[f]) == 0) {
+                    e->module_idx = m;
+                    snprintf(e->slot_label, sizeof(e->slot_label), "%s",
+                             mm->slot_label);
+                    m = s_module_count;      /* break both loops */
+                    break;
+                }
+        }
+    }
+    return e;
 }
 
 void backend_read_summary(system_summary_t *out)

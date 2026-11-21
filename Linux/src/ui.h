@@ -102,6 +102,20 @@ typedef struct {
     GtkWidget *lbl_pi_status;
     GtkWidget *lbl_pi_time;
 
+    /* SPD sub-page (RAM tab second row) — shows the selected DIMM's SPD */
+    GtkWidget *lbl_spd_note;      /* "SPD of slot X — source path" row    */
+    GtkWidget *lbl_spd_crc;       /* base CRC status                      */
+    GtkWidget *lbl_spd_man, *lbl_spd_dram, *lbl_spd_part, *lbl_spd_serial;
+    GtkWidget *lbl_spd_date, *lbl_spd_rev;
+    GtkWidget *lbl_spd_geom, *lbl_spd_org, *lbl_spd_caps;
+    GtkWidget *lbl_spd_volt, *lbl_spd_phys, *lbl_spd_mirror;
+    /* profile selector + dynamically refilled decode grid */
+    GtkWidget *combo_spd_profile;
+    GtkWidget *grid_spd_prof;
+    int        spd_prof_n;        /* items in spd_prof_map                */
+    int        spd_prof_map[8];   /* 0=JEDEC base, 1..3=XMP Pn, 5..6=EXPO */
+    int        spd_prof_sel;
+
     /* Data */
     system_summary_t summary;
     int selected_module;

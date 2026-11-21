@@ -144,6 +144,8 @@ static GtkWidget *make_section_box(void)
 
 /* ── Build RAM tab ──────────────────────────────────────────────────── */
 
+static GtkWidget *build_spd_content(app_widgets_t *w);  /* fwd (SPD sub-page) */
+
 static GtkWidget *build_ram_tab(app_widgets_t *w)
 {
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
@@ -453,6 +455,7 @@ static GtkWidget *build_ram_tab(app_widgets_t *w)
     gtk_widget_set_hexpand(sub, TRUE);
     gtk_notebook_append_page(GTK_NOTEBOOK(sub), mid, gtk_label_new("Timings"));
     gtk_notebook_append_page(GTK_NOTEBOOK(sub), bot, gtk_label_new("Config / Electrical"));
+    gtk_notebook_append_page(GTK_NOTEBOOK(sub), build_spd_content(w), gtk_label_new("SPD"));
     gtk_box_append(GTK_BOX(vbox), sub);
 
     /* Footer */
@@ -581,6 +584,518 @@ static void set_e(GtkWidget *l, bool has, const char *text)
 {
     if (has && text && text[0]) set_label_text(l, text);
     else                        set_label_text(l, "N/A");
+}
+
+/* ── SPD sub-page (RAM tab second row: Timings | Config/Electrical | SPD) ─
+ * Shows the DDR5 SPD of the DIMM selected in the header dropdown, read
+ * from the kernel-exposed SPD5118 EEPROMs: static module info on the left,
+ * a profile selector (JEDEC base / XMP 3.0 / EXPO) on the right whose grid
+ * fully decodes the chosen profile (ps values + nCK at that profile's tCK).
+ * Decoding lives in spd_decode.c (provenance: spdr + DDR5SPDEditor — see
+ * that file's header). Every unavailable value renders as N/A.          */
+
+static const backend_spd_entry_t *s_spd_cur;  /* entry shown right now    */
+
+static void spd_fill_profile_grid(app_widgets_t *w);
+
+static void grid_clear(GtkWidget *g)
+{
+    GtkWidget *ch = gtk_widget_get_first_child(g);
+    while (ch) {
+        GtkWidget *next = gtk_widget_get_next_sibling(ch);
+        gtk_grid_remove(GTK_GRID(g), ch);
+        ch = next;
+    }
+}
+
+static void grid_row_txt(GtkWidget *g, int *r, const char *label, const char *value)
+{
+    GtkWidget *l = make_label(label, "label");
+    GtkWidget *v = make_value(value);
+    if (!value[0]) gtk_label_set_text(GTK_LABEL(v), "N/A");
+    gtk_grid_attach(GTK_GRID(g), l, 0, *r, 1, 1);
+    gtk_grid_attach(GTK_GRID(g), v, 1, *r, 1, 1);
+    (*r)++;
+}
+
+/* "16.640 ns (40 nCK)" — nCK via the JESD400-5B-corrected conversion     */
+static void fmt_ps(char *o, size_t n, uint32_t ps, uint32_t tck_ps)
+{
+    if (!ps) { snprintf(o, n, "N/A"); return; }
+    if (tck_ps)
+        snprintf(o, n, "%u.%03u ns  (%u nCK)", ps / 1000u, ps % 1000u,
+                 spd_ps_to_nck(ps, tck_ps));
+    else
+        snprintf(o, n, "%u.%03u ns", ps / 1000u, ps % 1000u);
+}
+
+/* inline-friendly wrapper: fmt_ps(o,...) then o */
+static const char *PS(char *o, size_t n, uint32_t ps, uint32_t tck)
+{
+    fmt_ps(o, n, ps, tck);
+    return o;
+}
+
+static void fmt_mv(char *o, size_t n, uint16_t mv)
+{
+    if (!mv) { snprintf(o, n, "N/A"); return; }
+    snprintf(o, n, "%u.%03u V", mv / 1000u, mv % 1000u);
+}
+
+/* profile code: 0 = JEDEC base, 1..3 = XMP P1..P3, 5..6 = EXPO P1..P2 */
+static void spd_profile_item_name(int code, const spd_info_t *s,
+                                  char *out, size_t n)
+{
+    if (code == 0) {
+        snprintf(out, n, "JEDEC base%s",
+                 s->timings.has && s->timings.base_data_rate_mt_s
+                 ? " timings" : "");
+        return;
+    }
+    const spd_profile_t *p = (code >= 5)
+        ? &s->expo.profile[code - 5] : &s->xmp.profile[code - 1];
+    const char *kind = (code >= 5) ? "EXPO" : "XMP";
+    int idx = (code >= 5) ? code - 4 : code;
+    if (p->has_name && p->data_rate_mt_s)
+        snprintf(out, n, "%s P%d — %s (%u MT/s)", kind, idx, p->name,
+                 p->data_rate_mt_s);
+    else if (p->data_rate_mt_s)
+        snprintf(out, n, "%s P%d — %u MT/s%s", kind, idx, p->data_rate_mt_s,
+                 p->has_cl ? "" : "");
+    else
+        snprintf(out, n, "%s P%d", kind, idx);
+}
+
+static void spd_populate_profiles(app_widgets_t *w, const spd_info_t *s)
+{
+    int prev_code = (w->spd_prof_sel >= 0 && w->spd_prof_sel < w->spd_prof_n)
+                  ? w->spd_prof_map[w->spd_prof_sel] : 0;
+    w->spd_prof_n = 0;
+    int map[8];
+    if (s->timings.has) map[w->spd_prof_n++] = 0;
+    for (int i = 0; i < 3; i++)
+        if (s->xmp.present && s->xmp.profile[i].present && w->spd_prof_n < 8)
+            map[w->spd_prof_n++] = 1 + i;
+    for (int i = 0; i < 2; i++)
+        if (s->expo.present && s->expo.profile[i].present && w->spd_prof_n < 8)
+            map[w->spd_prof_n++] = 5 + i;
+
+    GtkStringList *model = GTK_STRING_LIST(
+        gtk_drop_down_get_model(GTK_DROP_DOWN(w->combo_spd_profile)));
+    guint old = g_list_model_get_n_items(G_LIST_MODEL(model));
+    for (guint i = old; i > 0; i--) gtk_string_list_remove(model, i - 1);
+
+    int keep = 0;
+    char item[96];
+    for (int i = 0; i < w->spd_prof_n; i++) {
+        w->spd_prof_map[i] = map[i];
+        spd_profile_item_name(map[i], s, item, sizeof(item));
+        gtk_string_list_append(model, item);
+        if (map[i] == prev_code) keep = i;
+    }
+    w->spd_prof_sel = keep;
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(w->combo_spd_profile),
+                               (guint)keep);
+}
+
+static void spd_fill_profile_grid(app_widgets_t *w)
+{
+    GtkWidget *g = w->grid_spd_prof;
+    grid_clear(g);
+    int r = 0;
+    if (!s_spd_cur || !s_spd_cur->decode_ok ||
+        w->spd_prof_sel < 0 || w->spd_prof_sel >= w->spd_prof_n) {
+        grid_row_txt(g, &r, "Profile", "");
+        return;
+    }
+    const spd_info_t *s = &s_spd_cur->info;
+    char buf[256], buf2[96];
+    int code = w->spd_prof_map[w->spd_prof_sel];
+
+    if (code == 0) {
+        const spd_base_timings_t *t = &s->timings;
+        uint32_t tck = t->tckavg_min_ps;
+        grid_row_txt(g, &r, "Base speed",
+                     t->base_data_rate_mt_s
+                     ? (snprintf(buf, sizeof(buf), "%u MT/s (tCKmin %u ps)",
+                                 t->base_data_rate_mt_s, t->tckavg_min_ps), buf)
+                     : "N/A");
+        snprintf(buf, sizeof(buf), "%u – %u ps", t->tckavg_min_ps, t->tckavg_max_ps);
+        grid_row_txt(g, &r, "tCK range", buf);
+        grid_row_txt(g, &r, "CL set",
+                     t->cl_min ? (snprintf(buf, sizeof(buf), "%u – %u (even)",
+                                           t->cl_min, t->cl_max), buf) : "N/A");
+        grid_row_txt(g, &r, "tAA", PS(buf,  sizeof(buf),  t->taa_ps,  tck));
+        grid_row_txt(g, &r, "tRCD", PS(buf2, sizeof(buf2), t->trcd_ps, tck));
+        (void)buf2;
+        grid_row_txt(g, &r, "tRCD", PS(buf,  sizeof(buf),  t->trcd_ps, tck));
+        grid_row_txt(g, &r, "tRP", PS(buf,  sizeof(buf),  t->trp_ps,  tck));
+        grid_row_txt(g, &r, "tRAS", PS(buf,  sizeof(buf),  t->tras_ps, tck));
+        grid_row_txt(g, &r, "tRC", PS(buf,  sizeof(buf),  t->trc_ps,  tck));
+        grid_row_txt(g, &r, "tWR", PS(buf,  sizeof(buf),  t->twr_ps,  tck));
+        grid_row_txt(g, &r, "tRFC1", PS(buf, sizeof(buf),  t->trfc1_ps, tck));
+        grid_row_txt(g, &r, "tRFC2", PS(buf, sizeof(buf),  t->trfc2_ps, tck));
+        grid_row_txt(g, &r, "tRFCsb", PS(buf,sizeof(buf),  t->trfcsb_ps, tck));
+        if (t->trfc1_dlr_ps) {
+            snprintf(buf, sizeof(buf), "%u / %u / %u ns",
+                     t->trfc1_dlr_ps / 1000u, t->trfc2_dlr_ps / 1000u,
+                     t->trfcsb_dlr_ps / 1000u);
+            grid_row_txt(g, &r, "tRFC dLR", buf);
+        }
+        return;
+    }
+
+    int is_expo = code >= 5;
+    const spd_profile_t *p = is_expo ? &s->expo.profile[code - 5]
+                                     : &s->xmp.profile[code - 1];
+    uint32_t tck = p->tck_ps;
+
+    if (p->has_name) grid_row_txt(g, &r, "Name", p->name);
+    snprintf(buf, sizeof(buf), "%u%s (tCK %u ps)", p->data_rate_mt_s,
+             p->data_rate_mt_s ? " MT/s" : "", p->tck_ps);
+    grid_row_txt(g, &r, "Speed", p->data_rate_mt_s ? buf : "");
+    if (p->has_cl) {
+        snprintf(buf, sizeof(buf), "%u%s", p->cl,
+                 p->cl_mask ? (p->cl_in_mask ? "  (in CL set)" : "  (not in CL set!)")
+                            : "  (derived from tAA/tCK)");
+        grid_row_txt(g, &r, "CAS latency", buf);
+    } else {
+        grid_row_txt(g, &r, "CAS latency", "");
+    }
+    grid_row_txt(g, &r, "tAA", PS(buf, sizeof(buf), p->taa_ps,  tck));
+    grid_row_txt(g, &r, "tRCD", PS(buf, sizeof(buf), p->trcd_ps, tck));
+    grid_row_txt(g, &r, "tRP", PS(buf, sizeof(buf), p->trp_ps,  tck));
+    grid_row_txt(g, &r, "tRAS", PS(buf, sizeof(buf), p->tras_ps, tck));
+    grid_row_txt(g, &r, "tRC", PS(buf, sizeof(buf), p->trc_ps,  tck));
+    grid_row_txt(g, &r, "tWR", PS(buf, sizeof(buf), p->twr_ps,  tck));
+    {
+        const char *rfc_lbl[3] = { "tRFC1", "tRFC2", "tRFCsb" };
+        const uint32_t rfc_val[3] = { p->trfc1_ns, p->trfc2_ns, p->trfcsb_ns };
+        for (int i = 0; i < 3; i++) {
+            if (!rfc_val[i]) continue;
+            snprintf(buf, sizeof(buf), "%u ns  (%u nCK)", rfc_val[i],
+                     spd_ps_to_nck(rfc_val[i] * 1000u, tck));
+            grid_row_txt(g, &r, rfc_lbl[i], buf);
+        }
+    }
+    if (p->cl_mask) {
+        snprintf(buf, sizeof(buf), "%u – %u (even)", p->cl_min, p->cl_max);
+        grid_row_txt(g, &r, "CL set", buf);
+    }
+    fmt_mv(buf,  sizeof(buf),  p->vdd_mv);
+    fmt_mv(buf2, sizeof(buf2), p->vddq_mv);
+    snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), " / %s", buf2);
+    {
+        char b3[96]; fmt_mv(b3, sizeof(b3), p->vpp_mv);
+        snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), " / %s", b3);
+    }
+    grid_row_txt(g, &r, "VDD/VDDQ/VPP", buf);
+    if (p->has_vmemctrl) { fmt_mv(buf, sizeof(buf), p->vmemctrl_mv);
+                           grid_row_txt(g, &r, "VMemCtrl", buf); }
+    if (!is_expo) {
+        grid_row_txt(g, &r, "Command rate",
+                     p->has_command_rate ? p->command_rate : "");
+        snprintf(buf, sizeof(buf), "%s / %s",
+                 p->has_dm_boost ? (p->dm_boost ? "on" : "off") : "N/A",
+                 p->has_rtmc     ? (p->rtmc     ? "on" : "off") : "N/A");
+        grid_row_txt(g, &r, "DM Boost/RTMC", buf);
+        if (p->has_lower_limits &&
+            (p->trrd_l_ll | p->tccd_l_ll | p->tccd_l_wr_ll | p->tccd_l_wr2_ll |
+             p->tccd_l_wtr_ll | p->tccd_s_wtr_ll | p->trtp_ll | p->tfaw_ll)) {
+            snprintf(buf, sizeof(buf), "%u/%u/%u/%u/%u/%u/%u/%u nCK",
+                     p->trrd_l_ll, p->tccd_l_ll, p->tccd_l_wr_ll,
+                     p->tccd_l_wr2_ll, p->tccd_l_wtr_ll, p->tccd_s_wtr_ll,
+                     p->trtp_ll, p->tfaw_ll);
+            grid_row_txt(g, &r, "LCLK min RRD_L/CCD_L/CCD_L_WR/CCD_L_WR2/"
+                               "CCD_L_WTR/CCD_S_WTR/RTP/FAW", buf);
+        }
+        grid_row_txt(g, &r, "Profile CRC", p->crc_valid ? "OK" : "BAD");
+    } else if (s->expo.block_crc.has) {
+        grid_row_txt(g, &r, "EXPO block CRC",
+                     s->expo.block_crc.matches ? "OK" : "BAD");
+    }
+}
+
+static void spd_on_profile_changed(GtkDropDown *dd, GParamSpec *pspec,
+                                   gpointer user_data)
+{
+    (void)pspec;
+    app_widgets_t *w = user_data;
+    int sel = (int)gtk_drop_down_get_selected(dd);
+    if (sel == w->spd_prof_sel) return;
+    w->spd_prof_sel = sel;
+    spd_fill_profile_grid(w);
+}
+
+static GtkWidget *build_spd_content(app_widgets_t *w)
+{
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_add_css_class(vbox, "compact");
+    gtk_widget_set_margin_top(vbox, 4);
+    gtk_widget_set_margin_start(vbox, 4);
+    gtk_widget_set_margin_end(vbox, 4);
+    gtk_widget_set_margin_bottom(vbox, 4);
+    gtk_widget_set_hexpand(vbox, TRUE);
+
+    w->lbl_spd_note = make_label("", "footer-muted");
+    gtk_widget_set_hexpand(w->lbl_spd_note, TRUE);
+    gtk_label_set_wrap(GTK_LABEL(w->lbl_spd_note), TRUE);
+    gtk_box_append(GTK_BOX(vbox), w->lbl_spd_note);
+
+    GtkWidget *top = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 3);
+    gtk_widget_set_hexpand(top, TRUE);
+
+    /* Left: static module info */
+    GtkWidget *mod_box = make_section_box();
+    gtk_widget_set_hexpand(mod_box, TRUE);
+    {
+        gtk_box_append(GTK_BOX(mod_box), make_label("Module", "section-title"));
+        GtkWidget *g = gtk_grid_new();
+        gtk_grid_set_row_spacing(GTK_GRID(g), 2);
+        gtk_grid_set_column_spacing(GTK_GRID(g), 8);
+        int r = 0;
+        grid_row(g, r++, "Manufacturer:", &w->lbl_spd_man);
+        grid_row(g, r++, "DRAM:",          &w->lbl_spd_dram);
+        grid_row(g, r++, "Part:",          &w->lbl_spd_part);
+        grid_row(g, r++, "Serial:",        &w->lbl_spd_serial);
+        grid_row(g, r++, "Date:",          &w->lbl_spd_date);
+        grid_row(g, r++, "Rev / step:",    &w->lbl_spd_rev);
+        grid_row(g, r++, "Geometry:",      &w->lbl_spd_geom);
+        grid_row(g, r++, "Organization:",  &w->lbl_spd_org);
+        grid_row(g, r++, "Capacity:",      &w->lbl_spd_caps);
+        grid_row(g, r++, "Base voltages:", &w->lbl_spd_volt);
+        grid_row(g, r++, "Physical:",      &w->lbl_spd_phys);
+        grid_row(g, r++, "Rank1 mirror:",  &w->lbl_spd_mirror);
+        grid_row(g, r++, "Base CRC:",      &w->lbl_spd_crc);
+        gtk_box_append(GTK_BOX(mod_box), g);
+    }
+    gtk_box_append(GTK_BOX(top), mod_box);
+
+    /* Right: profile selector + full decode of the selected profile */
+    GtkWidget *prof_box = make_section_box();
+    gtk_widget_set_hexpand(prof_box, TRUE);
+    {
+        gtk_box_append(GTK_BOX(prof_box),
+                       make_label("Profiles (JEDEC / XMP 3.0 / EXPO)",
+                                  "section-title"));
+        w->combo_spd_profile = gtk_drop_down_new(
+            G_LIST_MODEL(gtk_string_list_new(NULL)), NULL);
+        gtk_widget_set_hexpand(w->combo_spd_profile, TRUE);
+        g_signal_connect(w->combo_spd_profile, "notify::selected",
+                         G_CALLBACK(spd_on_profile_changed), w);
+        gtk_box_append(GTK_BOX(prof_box), w->combo_spd_profile);
+
+        GtkWidget *g = gtk_grid_new();
+        gtk_grid_set_row_spacing(GTK_GRID(g), 2);
+        gtk_grid_set_column_spacing(GTK_GRID(g), 8);
+        gtk_widget_set_margin_top(g, 4);
+        w->grid_spd_prof = g;
+        gtk_box_append(GTK_BOX(prof_box), g);
+    }
+    gtk_box_append(GTK_BOX(top), prof_box);
+    gtk_box_append(GTK_BOX(vbox), top);
+
+    return vbox;
+}
+
+/* Fill the static module-info labels (entry NULL → N/A). */
+static void spd_update_labels(app_widgets_t *w, const backend_spd_entry_t *e)
+{
+    char buf[600];
+
+    if (e == s_spd_cur)
+        return;                     /* static data — nothing to redo */
+    s_spd_cur = e;
+
+    if (!e || !e->decode_ok) {
+        const char *err = (e && e->info.error[0])
+                        ? e->info.error
+                        : "No SPD for this DIMM — no readable SPD EEPROM (spd5118) found for it";
+        set_label_text(w->lbl_spd_note, err);
+        GtkWidget *labels[] = {
+            w->lbl_spd_crc, w->lbl_spd_man, w->lbl_spd_dram, w->lbl_spd_part,
+            w->lbl_spd_serial, w->lbl_spd_date, w->lbl_spd_rev,
+            w->lbl_spd_geom, w->lbl_spd_org, w->lbl_spd_caps, w->lbl_spd_volt,
+            w->lbl_spd_phys, w->lbl_spd_mirror,
+        };
+        for (size_t i = 0; i < sizeof(labels)/sizeof(labels[0]); i++)
+            set_label_text(labels[i], "N/A");
+        w->spd_prof_n = 0;
+        GtkStringList *model = GTK_STRING_LIST(
+            gtk_drop_down_get_model(GTK_DROP_DOWN(w->combo_spd_profile)));
+        guint old = g_list_model_get_n_items(G_LIST_MODEL(model));
+        for (guint i = old; i > 0; i--) gtk_string_list_remove(model, i - 1);
+        spd_fill_profile_grid(w);
+        return;
+    }
+    const spd_info_t *s = &e->info;
+
+    snprintf(buf, sizeof(buf), "SPD of module %s — %s (%d bytes)",
+             e->slot_label[0] ? e->slot_label : "?", e->source, e->image_len);
+    set_label_text(w->lbl_spd_note, buf);
+
+    if (s->base_crc.has)
+        set_label_fmt(w->lbl_spd_crc, "%s (0x%04X / 0x%04X)",
+                      s->base_crc.matches ? "OK" : "BAD",
+                      s->base_crc.computed, s->base_crc.stored);
+    else
+        set_label_text(w->lbl_spd_crc, "N/A");
+
+    if (s->manufacturing.has) {
+        if (s->manufacturing.module_mfr[0])
+            set_label_text(w->lbl_spd_man, s->manufacturing.module_mfr);
+        else
+            set_label_fmt(w->lbl_spd_man, "JEP-106 bank %u code 0x%02X",
+                          s->manufacturing.module_mfr_bank,
+                          s->manufacturing.module_mfr_code);
+        if (s->manufacturing.dram_mfr[0])
+            set_label_fmt(w->lbl_spd_dram, "%s (step 0x%02X)",
+                          s->manufacturing.dram_mfr, s->manufacturing.dram_stepping);
+        else
+            set_label_fmt(w->lbl_spd_dram, "JEP-106 bank %u code 0x%02X",
+                          s->manufacturing.dram_mfr_bank,
+                          s->manufacturing.dram_mfr_code);
+        set_e(w->lbl_spd_part, s->manufacturing.part_number[0] != '\0',
+              s->manufacturing.part_number);
+        set_label_fmt(w->lbl_spd_serial, "%08X", s->manufacturing.serial);
+        set_label_fmt(w->lbl_spd_date, "week %u of %u",
+                      s->manufacturing.week, s->manufacturing.year);
+        set_label_fmt(w->lbl_spd_rev, "0x%02X / 0x%02X",
+                      s->manufacturing.revision_code,
+                      s->manufacturing.dram_stepping);
+    } else {
+        set_label_text(w->lbl_spd_man, "N/A");
+        set_label_text(w->lbl_spd_dram, "N/A");
+        set_label_text(w->lbl_spd_part, "N/A");
+        set_label_text(w->lbl_spd_serial, "N/A");
+        set_label_text(w->lbl_spd_date, "N/A");
+        set_label_text(w->lbl_spd_rev, "N/A");
+    }
+
+    if (s->identity.has) {
+        const spd_identity_t *id = &s->identity;
+        set_label_fmt(w->lbl_spd_geom, "x%u, %u Gb/die %s, %uR x %u ch, %u+%u bit bus",
+                      id->io_width_bits, id->density_per_die_gb,
+                      id->package_type_str, id->package_ranks_per_channel,
+                      id->channels_per_dimm, id->primary_bus_width_bits,
+                      id->ecc_width_bits);
+        set_label_fmt(w->lbl_spd_org, "%s%s, R%u C%u, %u BG x %u banks, SPD rev %X.%X",
+                      id->module_type_str, id->hybrid ? " (hybrid)" : "",
+                      id->row_address_bits, id->column_address_bits,
+                      id->bank_groups, id->banks_per_bank_group,
+                      id->spd_rev_major, id->spd_rev_minor);
+        if (id->has_capacity)
+            set_label_fmt(w->lbl_spd_caps, "%.0f GB",
+                          (double)id->capacity_bytes / 1e9);
+        else
+            set_label_text(w->lbl_spd_caps, "N/A");
+        if (id->has_voltages)
+            set_label_fmt(w->lbl_spd_volt, "%u.%03u / %u.%03u / %u.%03u V",
+                          id->vdd_nominal_mv,  id->vdd_nominal_mv % 1000,
+                          id->vddq_nominal_mv, id->vddq_nominal_mv % 1000,
+                          id->vpp_nominal_mv,  id->vpp_nominal_mv % 1000);
+        else
+            set_label_text(w->lbl_spd_volt, "N/A");
+    } else {
+        set_label_text(w->lbl_spd_geom, "N/A");
+        set_label_text(w->lbl_spd_org, "N/A");
+        set_label_text(w->lbl_spd_caps, "N/A");
+        set_label_text(w->lbl_spd_volt, "N/A");
+    }
+
+    if (s->module.has) {
+        set_label_fmt(w->lbl_spd_phys, "%u mm, card %s",
+                      s->module.nominal_height_mm, s->module.raw_card);
+        set_label_text(w->lbl_spd_mirror,
+                       s->module.rank1_address_mirrored ? "Yes" : "No");
+    } else if (s->module.not_decoded_reason[0]) {
+        set_label_text(w->lbl_spd_phys, s->module.not_decoded_reason);
+        set_label_text(w->lbl_spd_mirror, "N/A");
+    } else {
+        set_label_text(w->lbl_spd_phys, "N/A");
+        set_label_text(w->lbl_spd_mirror, "N/A");
+    }
+
+    spd_populate_profiles(w, s);
+    spd_fill_profile_grid(w);
+}
+
+/* Compare ignoring surrounding whitespace and case. */
+static bool part_eq(const char *a, const char *b)
+{
+    char ta[STR_LEN], tb[STR_LEN];
+    size_t la = strlen(a), lb = strlen(b);
+    while (la && (a[la-1] == ' ' || a[la-1] == '\t')) la--;
+    while (lb && (b[lb-1] == ' ' || b[lb-1] == '\t')) lb--;
+    if (la >= sizeof(ta) || lb >= sizeof(tb)) return false;
+    memcpy(ta, a, la); ta[la] = '\0';
+    memcpy(tb, b, lb); tb[lb] = '\0';
+    return la && lb && strcasecmp(ta, tb) == 0;
+}
+
+/* Show the SPD of the currently selected DIMM. Pairing: serial (backend,
+ * decimal or hex) first; otherwise same-kit entries are matched by order —
+ * SPD hub addresses follow physical DIMM order, modules by slot label. */
+static void spd_update_for_module(app_widgets_t *w)
+{
+    int n = backend_spd_load();
+    int mi = w->selected_module;
+    if (mi < 0 || mi >= w->summary.module_count) {
+        spd_update_labels(w, NULL);
+        return;
+    }
+    const memory_module_t *m = &w->summary.modules[mi];
+
+    for (int i = 0; i < n; i++) {
+        const backend_spd_entry_t *e = backend_spd_get(i);
+        if (e && e->module_idx == mi) { spd_update_labels(w, e); return; }
+    }
+
+    int spd_idx[MAX_MODULES], spd_n = 0;
+    int mod_idx[MAX_MODULES], mod_n = 0;
+    for (int i = 0; i < n; i++) {
+        const backend_spd_entry_t *e = backend_spd_get(i);
+        if (e && e->decode_ok && e->module_idx < 0 &&
+            part_eq(m->part_number, e->info.manufacturing.part_number))
+            spd_idx[spd_n++] = i;
+    }
+    for (int i = 0; i < w->summary.module_count; i++) {
+        const memory_module_t *mm = &w->summary.modules[i];
+        bool taken = false;
+        for (int k = 0; k < n; k++) {
+            const backend_spd_entry_t *e = backend_spd_get(k);
+            if (e && e->module_idx == i) { taken = true; break; }
+        }
+        if (!taken && part_eq(m->part_number, mm->part_number))
+            mod_idx[mod_n++] = i;
+    }
+    if (spd_n == 0 || spd_n != mod_n) {
+        spd_update_labels(w, NULL);
+        return;
+    }
+    for (int i = 0; i < mod_n; i++)            /* modules by slot label */
+        for (int j = i + 1; j < mod_n; j++)
+            if (strcmp(w->summary.modules[mod_idx[j]].slot_label,
+                       w->summary.modules[mod_idx[i]].slot_label) < 0) {
+                int t = mod_idx[i]; mod_idx[i] = mod_idx[j]; mod_idx[j] = t;
+            }
+    for (int i = 0; i < spd_n; i++)            /* SPD by bus+address */
+        for (int j = i + 1; j < spd_n; j++) {
+            int bi, ai, bj, aj;
+            sscanf(backend_spd_get(spd_idx[i])->source,
+                   "/sys/bus/i2c/devices/%d-%x", &bi, &ai);
+            sscanf(backend_spd_get(spd_idx[j])->source,
+                   "/sys/bus/i2c/devices/%d-%x", &bj, &aj);
+            if (bj < bi || (bj == bi && aj < ai)) {
+                int t = spd_idx[i]; spd_idx[i] = spd_idx[j]; spd_idx[j] = t;
+            }
+        }
+    for (int i = 0; i < mod_n; i++)
+        if (mod_idx[i] == mi) {
+            spd_update_labels(w, backend_spd_get(spd_idx[i]));
+            return;
+        }
+    spd_update_labels(w, NULL);
 }
 
 /* ── Refresh data → UI ──────────────────────────────────────────────── */
@@ -962,6 +1477,9 @@ static void refresh_ui(app_widgets_t *w)
                      "N/A — no kernel interface for this board's fan controller (EC-only)");
         set_label_text(w->lbl_fans, buf);
     }
+
+    /* SPD page (static data — updates only when pairing changes) */
+    spd_update_for_module(w);
 }
 
 /* Timer callback */
@@ -1219,6 +1737,7 @@ static void on_module_changed(GtkDropDown *dropdown, GParamSpec *pspec, gpointer
     (void)pspec;
     app_widgets_t *w = (app_widgets_t *)user_data;
     w->selected_module = (int)gtk_drop_down_get_selected(dropdown);
+    spd_update_for_module(w);   /* SPD page follows the selected DIMM */
 }
 
 /* ── App activate ───────────────────────────────────────────────────── */
@@ -1314,6 +1833,8 @@ static void on_activate(GtkApplication *app, gpointer user_data)
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(bench_scroll), build_bench_tab(w));
     gtk_notebook_append_page(GTK_NOTEBOOK(notebook), bench_scroll, gtk_label_new("Benchmark"));
+
+    /* SPD lives in the RAM tab's second row (Timings | Config/Electrical | SPD) */
 
     gtk_box_append(GTK_BOX(main_box), notebook);
 

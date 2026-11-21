@@ -19,3 +19,4 @@ sources/*
 
 # build artifacts
 Linux/tests/test_decode
+Linux/tests/test_spd

@@ -4,15 +4,19 @@
 
 **Zen 5 / DDR5 memory timings**
 
-![DDR5 timings](screenshot.png)
+<img src="screenshot.png" alt="DDR5 timings" width="720">
 
 **DDR5 controller configuration and electrical settings**
 
-![DDR5 electrical settings](screenshot-ddr5-config.png)
+<img src="screenshot-ddr5-config.png" alt="DDR5 electrical settings" width="720">
+
+**DDR5 SPD contents with JEDEC / XMP 3.0 / EXPO profiles**
+
+<img src="screenshot-spd.png" alt="SPD profiles" width="720">
 
 **CPU monitoring, voltages, temperatures and fan labels**
 
-![CPU monitoring](screenshot-cpu.png)
+<img src="screenshot-cpu.png" alt="CPU monitoring" width="720">
 
 ### Supported CPUs
 
@@ -129,6 +133,8 @@ sudo ./Linux/tuxtimings
 ### License
 
 This project is licensed under the **GNU General Public License v3.0**. See [LICENSE](LICENSE) for the full text.
+
+The DDR5 SPD decoding (`Linux/src/spd_decode.c`) ports algorithms from third-party reference implementations; their copyright notices and license texts are retained — see [Linux/PROVENANCE.md](Linux/PROVENANCE.md) and [Linux/licenses/](Linux/licenses/).
 
 ### References and projects used
 

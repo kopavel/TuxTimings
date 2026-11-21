@@ -194,8 +194,12 @@ typedef struct {
     bool        version_known;
     uint8_t     enable_bits;     /* 0x283                                  */
     bool        hybrid_expo;     /* EXPO overlays slots 3/user1 (0x340)    */
-    spd_profile_t profile[3];    /* [0]=P1@0x2C0 [1]=P2@0x300 [2]=P3@0x340
-                                  *  (P3 invalid when hybrid_expo)         */
+    spd_profile_t profile[5];    /* [0]=P1@0x2C0 [1]=P2@0x300 [2]=P3@0x340
+                                  *  (P3 invalid when hybrid_expo)
+                                  *  [3]=User1@0x380 [4]=User2@0x3C0 —
+                                  *  user slots gated on block content, not
+                                  *  enable bits; User1 invalid when
+                                  *  hybrid_expo; user slots have no name   */
 } spd_xmp_t;
 
 typedef struct {

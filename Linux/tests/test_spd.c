@@ -312,6 +312,110 @@ static void test_negative(void)
     EXPECT(!s.xmp.present && !s.expo.present, "512B: no vendor sections");
 }
 
+/* ── XMP3 user profile slots @0x380/0x3C0 ────────────────────── */
+
+/* CRC-16/CCITT-FALSE-zero-init over the first 62 block bytes — identical
+ * to spd_decode.c's section CRC / DDR5SPDEditor utilities::Crc16. */
+static uint16_t t_crc16(const unsigned char *b, size_t n)
+{
+    unsigned crc = 0;
+    for (size_t i = 0; i < n; i++) {
+        crc ^= (unsigned)b[i] << 8;
+        for (int j = 0; j < 8; j++)
+            crc = (crc & 0x8000u) ? ((crc << 1) ^ 0x1021u) & 0xFFFFu
+                                  : (crc << 1) & 0xFFFFu;
+    }
+    return (uint16_t)crc;
+}
+
+/* Synthetic XMP-shaped 64-B profile block: DDR5-6400 CL32,
+ * VPP 1.8 / VDD 1.35 / VDDQ 1.35 V, cmd rate 2n, stored CRC fixed. */
+static void put_user_profile(unsigned char *img, size_t base)
+{
+    memset(img + base, 0, 64);
+    img[base + 0x00] = 0x30;   /* vpp  1800                             */
+    img[base + 0x01] = 0x27;   /* vdd  1350                             */
+    img[base + 0x02] = 0x27;   /* vddq 1350                             */
+    img[base + 0x04] = 0x30;   /* vmemctrl 1800                         */
+    img[base + 0x05] = 0x38;   /* tCK  312 ps  (LE)                     */
+    img[base + 0x06] = 0x01;
+    img[base + 0x07] = 0x40;   /* CL mask: bit (32-20)/2 -> {32}        */
+    img[base + 0x0D] = 0x00;   /* tAA  9984 ps -> CL 32 @312            */
+    img[base + 0x0E] = 0x27;
+    img[base + 0x0F] = 0x00;   /* tRCD 9984                             */
+    img[base + 0x10] = 0x27;
+    img[base + 0x11] = 0x00;   /* tRP  9984                             */
+    img[base + 0x12] = 0x27;
+    img[base + 0x3C] = 0x02;   /* command rate 2n                       */
+    uint16_t crc = t_crc16(img + base, 62);
+    img[base + 0x3E] = (unsigned char)(crc & 0xFF);   /* stored CRC (LE) */
+    img[base + 0x3F] = (unsigned char)(crc >> 8);
+}
+
+static void expect_user_profile(const spd_profile_t *p, const char *slot)
+{
+    char what[64];
+#define EW(cond, fmt, ...) do { snprintf(what, sizeof(what), fmt, slot); \
+                                EXPECT(cond, "%s", what); } while (0)
+    EW(p->present, "%s: present");
+    EW(!p->has_name, "%s: user slots have no name field");
+    EW(p->tck_ps == 312, "%s: tCK 312");
+    EW(p->data_rate_mt_s == 6400, "%s: rate 6400");
+    EW(p->has_cl && p->cl == 32, "%s: CL 32");
+    EW(p->cl_mask == 0x40 && p->cl_in_mask, "%s: CL mask {32}");
+    EW(p->vpp_mv == 1800 && p->vdd_mv == 1350 && p->vddq_mv == 1350,
+       "%s: voltages");
+    EW(p->has_vmemctrl && p->vmemctrl_mv == 1800, "%s: vmemctrl");
+    EW(p->has_command_rate && strcmp(p->command_rate, "2n") == 0,
+       "%s: cmd rate 2n");
+    EW(p->crc_valid, "%s: stored CRC valid");
+#undef EW
+}
+
+static void test_user_profiles(void)
+{
+    spd_info_t s;
+    unsigned char img[1024];
+
+    /* Case A — hybrid fixture (EXPO at 0x340 covers 0x340..0x3BF):
+     * User1@0x380 must stay suppressed EVEN THOUGH the fixture has
+     * non-zero bytes there (EXPO profile 2 data); User2@0x3C0 (outside
+     * the EXPO block) must decode when populated. */
+    memcpy(img, fixture, sizeof(img));
+    int user1_nonzero = 0;
+    for (size_t i = 0; i < 64; i++)
+        if (img[0x380 + i]) user1_nonzero = 1;
+    EXPECT(user1_nonzero, "fixture has data at 0x380 (suppression bites)");
+    put_user_profile(img, 0x3C0);
+    EXPECT(spd_decode_ddr5(img, sizeof(img), &s), "user2 image decodes");
+    EXPECT(!s.xmp.profile[3].present, "user1 suppressed under EXPO");
+    expect_user_profile(&s.xmp.profile[4], "user2");
+
+    memcpy(img, fixture, sizeof(img));
+    put_user_profile(img, 0x3C0);
+    img[0x3C0 + 0x05] ^= 0xFF;   /* break the payload, CRC now stale */
+    EXPECT(spd_decode_ddr5(img, sizeof(img), &s), "bad-crc image decodes");
+    EXPECT(!s.xmp.profile[4].present, "user2 with stale CRC not presented");
+
+    /* Case B — non-hybrid (EXPO magic erased): User1@0x380 gated on its
+     * valid block CRC; all-zero User2@0x3C0 stays absent. */
+    memcpy(img, fixture, sizeof(img));
+    memset(img + 0x340, 0, 4);   /* drop "EXPO" magic */
+    memset(img + 0x3C0, 0, 64);  /* ensure empty user2 */
+    put_user_profile(img, 0x380);
+    EXPECT(spd_decode_ddr5(img, sizeof(img), &s), "user1 image decodes");
+    EXPECT(!s.expo.present, "EXPO magic erased");
+    expect_user_profile(&s.xmp.profile[3], "user1");
+    EXPECT(!s.xmp.profile[4].present, "empty user2 block stays absent");
+    /* P3 slot @0x340 is enable-bit-gated (bit2 clear) — not revived: */
+    EXPECT(!s.xmp.profile[2].present, "P3 still enable-bit-gated");
+
+    /* Case C — untouched fixture: both user slots empty -> absent. */
+    EXPECT(spd_decode_ddr5(fixture, sizeof(fixture), &s), "fixture decodes");
+    EXPECT(!s.xmp.profile[3].present && !s.xmp.profile[4].present,
+           "fixture: no user profiles");
+}
+
 /* ── optional: live dumps and vendor samples (skip if absent) ───────── */
 
 static int load_file(const char *path, unsigned char *buf, size_t cap, size_t *len)
@@ -367,6 +471,7 @@ int main(void)
     test_helpers();
     test_fixture();
     test_negative();
+    test_user_profiles();
     test_external_samples();
 
     printf("%d checks, %d failures\n", checks, failures);

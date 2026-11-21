@@ -463,12 +463,16 @@ static void profile_cl_finalize(spd_profile_t *p)
                     (((p->cl_mask >> ((p->cl - 20u) / 2u)) & 1u) != 0);
 }
 
-/* XMP 3.0: header @0x280 (magic 0C 4A), profiles 64 B @0x2C0/0x300/0x340,
- * enable bits @0x283, names @0x28E/+16/+32; per-block CRC over block-2
- * bytes (spdr + DDR5SPDEditor agree on all ranges). */
+/* XMP 3.0: header @0x280 (magic 0C 4A), five 64-B profile slots
+ * @0x2C0/0x300/0x340/0x380/0x3C0, enable bits @0x283, names @0x28E/+16/+32;
+ * per-block CRC over block-2 bytes (spdr + DDR5SPDEditor agree on all
+ * ranges). Slot 4/5 = XMP3 user profiles (DDR5SPDEditor XMP_Struct:
+ * profile1/2/3 + user_profile1/2). */
 #define XMP_HDR_BASE   0x280u
 #define XMP_BLOCK_LEN  64u
 #define XMP_P1_BASE    0x2C0u
+#define XMP_USER1_BASE 0x380u
+#define XMP_USER2_BASE 0x3C0u
 #define XMP_NAME1      0x28Eu
 
 static void decode_xmp_profile(const img_t *im, size_t base, spd_profile_t *p)
@@ -536,6 +540,33 @@ static void decode_xmp(const img_t *im, bool expo_at_340, spd_xmp_t *x)
         p->present = true;
         decode_xmp_profile(im, XMP_P1_BASE + (size_t)i * XMP_BLOCK_LEN, p);
         read_xmp_name(im, XMP_NAME1 + (size_t)i * 16, p);
+    }
+
+    /* XMP3 user profiles (DDR5SPDEditor XMP_Struct.user_profile1/2):
+     * NOT gated by the enable bits. Presence gate = block CRC valid
+     * (stored field != 0 AND == CRC16 over the first 62 bytes). This is
+     * stricter than the editor's hasData() (any non-zero CRC16), which
+     * false-positives on vendor data overlapping the slots — the
+     * TEAMGROUP sample carries a vendor tail at 0x3E0 that hasData()
+     * would present as "User 2". A BIOS/editor-written user profile
+     * always carries a valid CRC (XMP3_Bundle::fixCRCs), so real
+     * profiles still pass. User1 @0x380 sits inside the 128-B EXPO
+     * block on hybrid modules (isXMPUser1Present returns false when
+     * EXPO coexists); User2 @0x3C0 stays valid there
+     * (isXMPUser2Present). The header has name fields for P1..P3 only,
+     * so user slots carry no name. */
+    static const size_t user_base[2] = { XMP_USER1_BASE, XMP_USER2_BASE };
+    for (int i = 0; i < 2; i++) {
+        if (i == 0 && expo_at_340)
+            continue;
+        size_t base = user_base[i];
+        if (!have(im, base, XMP_BLOCK_LEN)) continue;
+        spd_crc_t c = section_crc(im, base, XMP_BLOCK_LEN);
+        if (!c.has || c.stored == 0 || !c.matches)
+            continue;
+        spd_profile_t *p = &x->profile[3 + i];
+        p->present = true;
+        decode_xmp_profile(im, base, p);
     }
 }
 

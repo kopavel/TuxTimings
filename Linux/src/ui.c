@@ -642,7 +642,15 @@ static void fmt_mv(char *o, size_t n, uint16_t mv)
     snprintf(o, n, "%u.%03u V", mv / 1000u, mv % 1000u);
 }
 
-/* profile code: 0 = JEDEC base, 1..3 = XMP P1..P3, 5..6 = EXPO P1..P2 */
+/* profile code: 0 = JEDEC base, 1..5 = XMP P1..P3/User1..User2,
+ * 6..7 = EXPO P1..P2 */
+static void spd_profile_slot_label(int code, char *out, size_t n)
+{
+    if (code >= 6) snprintf(out, n, "EXPO P%d", code - 5);
+    else if (code <= 3) snprintf(out, n, "XMP P%d", code);
+    else snprintf(out, n, "XMP User %d", code - 3);
+}
+
 static void spd_profile_item_name(int code, const spd_info_t *s,
                                   char *out, size_t n)
 {
@@ -652,18 +660,17 @@ static void spd_profile_item_name(int code, const spd_info_t *s,
                  ? " timings" : "");
         return;
     }
-    const spd_profile_t *p = (code >= 5)
-        ? &s->expo.profile[code - 5] : &s->xmp.profile[code - 1];
-    const char *kind = (code >= 5) ? "EXPO" : "XMP";
-    int idx = (code >= 5) ? code - 4 : code;
+    const spd_profile_t *p = (code >= 6)
+        ? &s->expo.profile[code - 6] : &s->xmp.profile[code - 1];
+    char slot[24];
+    spd_profile_slot_label(code, slot, sizeof(slot));
     if (p->has_name && p->data_rate_mt_s)
-        snprintf(out, n, "%s P%d — %s (%u MT/s)", kind, idx, p->name,
+        snprintf(out, n, "%s — %s (%u MT/s)", slot, p->name,
                  p->data_rate_mt_s);
     else if (p->data_rate_mt_s)
-        snprintf(out, n, "%s P%d — %u MT/s%s", kind, idx, p->data_rate_mt_s,
-                 p->has_cl ? "" : "");
+        snprintf(out, n, "%s — %u MT/s", slot, p->data_rate_mt_s);
     else
-        snprintf(out, n, "%s P%d", kind, idx);
+        snprintf(out, n, "%s", slot);
 }
 
 static void spd_populate_profiles(app_widgets_t *w, const spd_info_t *s)
@@ -673,12 +680,12 @@ static void spd_populate_profiles(app_widgets_t *w, const spd_info_t *s)
     w->spd_prof_n = 0;
     int map[8];
     if (s->timings.has) map[w->spd_prof_n++] = 0;
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < 5; i++)
         if (s->xmp.present && s->xmp.profile[i].present && w->spd_prof_n < 8)
             map[w->spd_prof_n++] = 1 + i;
     for (int i = 0; i < 2; i++)
         if (s->expo.present && s->expo.profile[i].present && w->spd_prof_n < 8)
-            map[w->spd_prof_n++] = 5 + i;
+            map[w->spd_prof_n++] = 6 + i;
 
     GtkStringList *model = GTK_STRING_LIST(
         gtk_drop_down_get_model(GTK_DROP_DOWN(w->combo_spd_profile)));
@@ -745,8 +752,8 @@ static void spd_fill_profile_grid(app_widgets_t *w)
         return;
     }
 
-    int is_expo = code >= 5;
-    const spd_profile_t *p = is_expo ? &s->expo.profile[code - 5]
+    int is_expo = code >= 6;
+    const spd_profile_t *p = is_expo ? &s->expo.profile[code - 6]
                                      : &s->xmp.profile[code - 1];
     uint32_t tck = p->tck_ps;
 

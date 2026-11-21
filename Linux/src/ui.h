@@ -113,7 +113,7 @@ typedef struct {
     GtkWidget *combo_spd_profile;
     GtkWidget *grid_spd_prof;
     int        spd_prof_n;        /* items in spd_prof_map                */
-    int        spd_prof_map[8];   /* 0=JEDEC base, 1..3=XMP Pn, 5..6=EXPO */
+    int        spd_prof_map[8];   /* 0=JEDEC, 1..5=XMP, 6..7=EXPO        */
     int        spd_prof_sel;
 
     /* Data */

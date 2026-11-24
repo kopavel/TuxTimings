@@ -58,6 +58,13 @@ typedef struct {
     float package_power_w; /* reserved — populated but not yet displayed */
     float ppt_w;
     float package_current_a; /* reserved — populated but not yet displayed */
+    /* PBO limits (has_* false → value unavailable, render N/A) */
+    float ppt_limit_w;     bool has_ppt_limit;
+    float tdc_limit_a;     bool has_tdc_limit;
+    float tdc_current_a;   bool has_tdc_current;
+    float edc_limit_a;     bool has_edc_limit;
+    float thermal_limit_c; bool has_thermal_limit;
+    bool  has_socket_power;
     /* Voltages */
     float vcore, vsoc, vddp, vddg_ccd, vddg_iod, vdd_misc;
     float cpu_vddio, mem_vdd, mem_vddq, mem_vpp;
@@ -80,6 +87,10 @@ typedef struct {
     /* Per-core */
     float core_voltages[MAX_CORES];
     int   core_voltages_count;
+    float core_power_w[MAX_CORES];   int core_power_count;
+    float core_c0_pct[MAX_CORES];
+    float core_cc1_pct[MAX_CORES];
+    float core_cc6_pct[MAX_CORES];   int core_res_count;
     float core_usage_pct[MAX_CORES];
     int   core_usage_count;
     float core_freq_mhz[MAX_CORES];

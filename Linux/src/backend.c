@@ -19,6 +19,19 @@
 
 #define SMU_PATH "/sys/kernel/ryzen_smu_drv"
 
+/* Bridge for pm_debug_emit's callback API into the debug dump buffer. */
+struct pm_dump_ctx { char *buf; size_t cap; size_t *off; };
+static void pm_dump_emit(void *ctx, const char *fmt, ...)
+{
+    struct pm_dump_ctx *c = (struct pm_dump_ctx *)ctx;
+    if (*c->off + 1 >= c->cap) return;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(c->buf + *c->off, c->cap - *c->off, fmt, ap);
+    va_end(ap);
+    if (n > 0) *c->off += (size_t)n;
+}
+
 /* GCC conservatively warns about format truncation for sysfs path buffers
  * because it can't statically bound hwmon directory name lengths. All path
  * buffers here are 640 bytes — more than sufficient for any sysfs path. */
@@ -1865,6 +1878,20 @@ char *backend_read_debug_dump(void)
         }
     } else {
         DUMP("\n--- AOD scan: unavailable (aod_voltages module not loaded) ---\n");
+    }
+
+    /* ── PM table: decoded telemetry (registry-driven) ────────────── */
+    {
+        struct pm_dump_ctx dctx = { buf, cap, &off };
+        float *t = NULL;
+        int count = 0;
+        uint32_t pm_ver = read_smu_uint32("pm_table_version");
+        if (read_pm_table_raw(&t, &count)) {
+            pm_debug_emit(pm_dump_emit, &dctx, pm_ver, t, count, s_physical_cores);
+            free(t);
+        } else {
+            pm_debug_emit(pm_dump_emit, &dctx, pm_ver, NULL, 0, s_physical_cores);
+        }
     }
 
     /* ── PM table raw floats ──────────────────────────────────────── */

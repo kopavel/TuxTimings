@@ -491,49 +491,70 @@ static GtkWidget *build_cpu_tab(app_widgets_t *w)
     gtk_widget_set_hexpand(top, TRUE);
     gtk_box_set_homogeneous(GTK_BOX(top), TRUE);
 
-    /* Left: VID & per-core voltages */
-    GtkWidget *volt_box = make_section_box();
+    /* Left: ONE merged per-core table — kernel-side measurements (temp,
+     * OS load, cpufreq) plus verified SMU PM-table metrics (V, W, C0/CC6).
+     * No PM-derived frequency column (that block is conflicted — see
+     * docs/SMU_PM_TABLE_MAP.md). Unavailable cells render N/A, never 0. */
+    GtkWidget *core_box = make_section_box();
     {
-        gtk_box_append(GTK_BOX(volt_box), make_label("VID & Core Voltages", "section-title"));
+        gtk_box_append(GTK_BOX(core_box), make_label("Core Telemetry", "section-title"));
         GtkWidget *g = gtk_grid_new();
         gtk_grid_set_row_spacing(GTK_GRID(g), 2);
         gtk_grid_set_column_spacing(GTK_GRID(g), 8);
-        int r = 0;
-        grid_row(g, r++, "VID:", &w->lbl_vid);
+        const char *hdr[] = { "Core", "°C", "OS load", "MHz", "V", "W", "C0%", "CC6%" };
+        for (int c = 0; c < 8; c++)
+            gtk_grid_attach(GTK_GRID(g), make_label(hdr[c], "label"), c, 0, 1, 1);
         for (int i = 0; i < MAX_CORES; i++) {
             char lbl[8];
             snprintf(lbl, sizeof(lbl), "C%d:", i);
-            grid_row(g, r++, lbl, &w->lbl_core_volt[i]);
-            w->lbl_core_volt_lbl[i] = gtk_grid_get_child_at(GTK_GRID(g), 0, r - 1);
-            gtk_widget_set_visible(w->lbl_core_volt[i],     FALSE);
-            gtk_widget_set_visible(w->lbl_core_volt_lbl[i], FALSE);
+            int rr = 1 + i;
+            w->lbl_core_volt_lbl[i] = make_label(lbl, "label");
+            gtk_grid_attach(GTK_GRID(g), w->lbl_core_volt_lbl[i], 0, rr, 1, 1);
+            gtk_grid_attach(GTK_GRID(g), w->lbl_core_t[i]    = make_value("—"), 1, rr, 1, 1);
+            gtk_grid_attach(GTK_GRID(g), w->lbl_core_load[i] = make_value("—"), 2, rr, 1, 1);
+            gtk_grid_attach(GTK_GRID(g), w->lbl_core_freq[i] = make_value("—"), 3, rr, 1, 1);
+            gtk_grid_attach(GTK_GRID(g), w->lbl_core_volt[i] = make_value("—"), 4, rr, 1, 1);
+            gtk_grid_attach(GTK_GRID(g), w->lbl_core_pw[i]   = make_value("—"), 5, rr, 1, 1);
+            gtk_grid_attach(GTK_GRID(g), w->lbl_core_c0[i]   = make_value("—"), 6, rr, 1, 1);
+            gtk_grid_attach(GTK_GRID(g), w->lbl_core_cc6[i]  = make_value("—"), 7, rr, 1, 1);
+            for (int c = 0; c < 8; c++)
+                gtk_widget_set_visible(gtk_grid_get_child_at(GTK_GRID(g), c, rr), FALSE);
         }
         w->cpu_core_volt_rows = 0;
-        gtk_box_append(GTK_BOX(volt_box), g);
+        gtk_box_append(GTK_BOX(core_box), g);
+        /* per-column legend, one bullet per row (not one text block) */
+        static const char *bullets[] = {
+            "• °C / OS load / MHz — kernel (k10temp, cpufreq)",
+            "• V, W — per-core voltage and power from the SMU PM table",
+            "• C0% — silicon-measured core-awake share (not OS load)",
+            "• CC6% — core deep-sleep share; C0+CC1+CC6 ~= 100%",
+        };
+        for (size_t b = 0; b < sizeof(bullets) / sizeof(bullets[0]); b++) {
+            GtkWidget *l = make_label(bullets[b], "label");
+            gtk_label_set_wrap(GTK_LABEL(l), TRUE);
+            gtk_box_append(GTK_BOX(core_box), l);
+        }
     }
-    gtk_box_append(GTK_BOX(top), volt_box);
+    gtk_box_append(GTK_BOX(top), core_box);
 
-    /* Right: Temperatures & Fans */
+    /* Right: package-level — fans, common temps, VID and PBO limits */
     GtkWidget *temp_box = make_section_box();
     {
-        gtk_box_append(GTK_BOX(temp_box), make_label("Temp & Fans", "section-title"));
+        gtk_box_append(GTK_BOX(temp_box), make_label("Temp, Fans & PBO", "section-title"));
         GtkWidget *g = gtk_grid_new();
         gtk_grid_set_row_spacing(GTK_GRID(g), 2);
         gtk_grid_set_column_spacing(GTK_GRID(g), 8);
-        int r = 0;
-        grid_row(g, r++, "Fans:",         &w->lbl_fans);
+        grid_row(g, 0, "Fans:", &w->lbl_fans);
         gtk_label_set_wrap(GTK_LABEL(w->lbl_fans), TRUE);
-        gtk_box_append(GTK_BOX(temp_box), g);
-
-        gtk_box_append(GTK_BOX(temp_box), make_label("Temps:", "label"));
-        w->lbl_tdie = make_value("—");
+        grid_row(g, 1, "Temps:", &w->lbl_tdie);
         gtk_label_set_wrap(GTK_LABEL(w->lbl_tdie), TRUE);
-        gtk_box_append(GTK_BOX(temp_box), w->lbl_tdie);
-
-        gtk_box_append(GTK_BOX(temp_box), make_label("Core temps / load / freq:", "label"));
-        w->lbl_core_temps = make_value("—");
-        gtk_label_set_wrap(GTK_LABEL(w->lbl_core_temps), TRUE);
-        gtk_box_append(GTK_BOX(temp_box), w->lbl_core_temps);
+        int r = 2;
+        grid_row(g, r++, "VID:",     &w->lbl_vid);
+        grid_row(g, r++, "PPT:",     &w->lbl_pbo_ppt);
+        grid_row(g, r++, "TDC:",     &w->lbl_pbo_tdc);
+        grid_row(g, r++, "EDC:",     &w->lbl_pbo_edc);
+        grid_row(g, r++, "Thermal:", &w->lbl_pbo_thermal);
+        gtk_box_append(GTK_BOX(temp_box), g);
     }
     gtk_box_append(GTK_BOX(top), temp_box);
     gtk_box_append(GTK_BOX(vbox), top);
@@ -1429,23 +1450,70 @@ static void refresh_ui(app_widgets_t *w)
                           s->memory.type == MEM_DDR4 ? "DDR4" : "—";
     set_label_text(w->lbl_footer_type, mem_str);
 
-    /* CPU tab — VID & per-core voltages */
+    /* CPU tab — VID + ONE merged per-core table (all cells N/A-safe) */
     SET_VOLT(w->lbl_vid, m->vid);
     {
-        int count = m->core_voltages_count < MAX_CORES ? m->core_voltages_count : MAX_CORES;
+        int cnt = m->core_temps_count;
+        if (m->core_usage_count    > cnt) cnt = m->core_usage_count;
+        if (m->core_freq_count     > cnt) cnt = m->core_freq_count;
+        if (m->core_voltages_count > cnt) cnt = m->core_voltages_count;
+        if (m->core_power_count    > cnt) cnt = m->core_power_count;
+        if (m->core_res_count      > cnt) cnt = m->core_res_count;
+        if (cnt > MAX_CORES) cnt = MAX_CORES;
         for (int i = 0; i < MAX_CORES; i++) {
-            gboolean vis = (i < count);
-            gtk_widget_set_visible(w->lbl_core_volt[i],     vis);
-            gtk_widget_set_visible(w->lbl_core_volt_lbl[i], vis);
-            if (vis) SET_VOLT(w->lbl_core_volt[i], m->core_voltages[i]);
+            gboolean row = (i < cnt);
+            GtkWidget *cells[8] = { w->lbl_core_volt_lbl[i], w->lbl_core_t[i],
+                                    w->lbl_core_load[i],     w->lbl_core_freq[i],
+                                    w->lbl_core_volt[i],     w->lbl_core_pw[i],
+                                    w->lbl_core_c0[i],       w->lbl_core_cc6[i] };
+            for (int c = 0; c < 8; c++) gtk_widget_set_visible(cells[c], row);
+            if (!row) continue;
+            if (i < m->core_temps_count && m->core_temps_c[i] > 0.0f)
+                set_label_fmt(w->lbl_core_t[i], "%.1f\xC2\xB0""C",
+                              (double)m->core_temps_c[i]);
+            else
+                set_label_text(w->lbl_core_t[i], "N/A");
+            if (i < m->core_usage_count)
+                set_label_fmt(w->lbl_core_load[i], "%.0f%%",
+                              (double)m->core_usage_pct[i]);
+            else
+                set_label_text(w->lbl_core_load[i], "N/A");
+            if (i < m->core_freq_count && m->core_freq_mhz[i] > 0.0f)
+                set_label_fmt(w->lbl_core_freq[i], "%.0f",
+                              (double)m->core_freq_mhz[i]);
+            else
+                set_label_text(w->lbl_core_freq[i], "N/A");
+            if (i < m->core_voltages_count && m->core_voltages[i] > 0.0f)
+                set_label_fmt(w->lbl_core_volt[i], "%.4fV",
+                              (double)m->core_voltages[i]);
+            else
+                set_label_text(w->lbl_core_volt[i], "N/A");
+            if (i < m->core_power_count && m->core_power_w[i] > 0.0f)
+                set_label_fmt(w->lbl_core_pw[i], "%.2fW", (double)m->core_power_w[i]);
+            else
+                set_label_text(w->lbl_core_pw[i], "N/A");
+            if (i < m->core_res_count) {
+                set_label_fmt(w->lbl_core_c0[i], "%.0f%%", (double)m->core_c0_pct[i]);
+                set_label_fmt(w->lbl_core_cc6[i], "%.0f%%", (double)m->core_cc6_pct[i]);
+            } else {
+                set_label_text(w->lbl_core_c0[i], "N/A");
+                set_label_text(w->lbl_core_cc6[i], "N/A");
+            }
         }
     }
 
-    /* CPU tab — Temperatures (single blob row) */
+    /* CPU tab — Temperatures (package blob row; per-core temps live in the
+     * merged Core Telemetry table) */
     {
         char tbuf[256];
         int  toff = 0;
-        if (m->has_tdie)        toff += snprintf(tbuf+toff, sizeof(tbuf)-toff, "Tdie: %.1f\xC2\xB0""C  ", m->tdie_c);
+        /* Tdie is the same sensor as Tctl on Zen 4/5 — show it only when
+         * it actually differs (older parts apply a Tdie offset) */
+        bool show_tdie = m->has_tdie &&
+                         (!m->has_tctl ||
+                          (m->tdie_c - m->tctl_c > 0.5f) ||
+                          (m->tctl_c - m->tdie_c > 0.5f));
+        if (show_tdie)        toff += snprintf(tbuf+toff, sizeof(tbuf)-toff, "Tdie: %.1f\xC2\xB0""C  ", m->tdie_c);
         if (m->has_tctl)        toff += snprintf(tbuf+toff, sizeof(tbuf)-toff, "Tctl: %.1f\xC2\xB0""C  ", m->tctl_c);
         if (m->has_tccd1)       toff += snprintf(tbuf+toff, sizeof(tbuf)-toff, "Tccd1: %.1f\xC2\xB0""C  ", m->tccd1_c);
         if (m->has_tccd2)       toff += snprintf(tbuf+toff, sizeof(tbuf)-toff, "Tccd2: %.1f\xC2\xB0""C  ", m->tccd2_c);
@@ -1454,27 +1522,54 @@ static void refresh_ui(app_widgets_t *w)
         set_label_text(w->lbl_tdie, tbuf);
     }
 
+    /* CPU tab — PBO / power limits: current / limit / utilization.
+     * Utilization only when BOTH operands valid and limit > 0; high
+     * utilization is an estimate of the limiting factor, NOT a measured
+     * throttling flag (no throttle-flag source is published). EDC current
+     * stays hidden: its candidate index is debug-only. */
     {
-        int count = m->core_temps_count;
-        if (m->core_usage_count > count) count = m->core_usage_count;
-        if (m->core_freq_count  > count) count = m->core_freq_count;
-        if (count > MAX_CORES) count = MAX_CORES;
-        if (count == 0) {
-            set_label_text(w->lbl_core_temps, "—");
+        char cur[32], lim[32], util[24];
+        util[0] = '\0';
+
+        if (m->ppt_w > 0.0f)    snprintf(cur, sizeof(cur), "%.1fW", (double)m->ppt_w);
+        else                    snprintf(cur, sizeof(cur), "N/A");
+        if (m->has_ppt_limit) {
+            snprintf(lim, sizeof(lim), "%.0fW", (double)m->ppt_limit_w);
+            if (m->ppt_w > 0.0f && m->ppt_limit_w > 0.0f)
+                snprintf(util, sizeof(util), "  (%.0f%%)",
+                         100.0 * m->ppt_w / m->ppt_limit_w);
+        } else snprintf(lim, sizeof(lim), "N/A");
+        set_label_fmt(w->lbl_pbo_ppt, "%s / %s%s", cur, lim, util);
+
+        util[0] = '\0';
+        if (m->has_tdc_current) snprintf(cur, sizeof(cur), "%.2fA", (double)m->tdc_current_a);
+        else                    snprintf(cur, sizeof(cur), "N/A");
+        if (m->has_tdc_limit) {
+            snprintf(lim, sizeof(lim), "%.0fA", (double)m->tdc_limit_a);
+            if (m->has_tdc_current && m->tdc_limit_a > 0.0f)
+                snprintf(util, sizeof(util), "  (%.0f%%)",
+                         100.0 * m->tdc_current_a / m->tdc_limit_a);
+        } else snprintf(lim, sizeof(lim), "N/A");
+        set_label_fmt(w->lbl_pbo_tdc, "%s / %s%s", cur, lim, util);
+
+        util[0] = '\0';
+        snprintf(cur, sizeof(cur), "N/A");   /* current is candidate-only */
+        if (m->has_edc_limit) snprintf(lim, sizeof(lim), "%.0fA", (double)m->edc_limit_a);
+        else                  snprintf(lim, sizeof(lim), "N/A");
+        set_label_fmt(w->lbl_pbo_edc, "%s / %s%s", cur, lim, util);
+
+        if (m->has_thermal_limit) {
+            /* current temp lives HERE (vs limit); the duplicate Tdie is
+             * suppressed from the Temps blob (same sensor on Zen 4/5) */
+            float now = m->has_tctl ? m->tctl_c : m->cpu_temp_c;
+            if (now > 0.0f)
+                set_label_fmt(w->lbl_pbo_thermal, "%.1f / %.0f\xC2\xB0""C",
+                              (double)now, (double)m->thermal_limit_c);
+            else
+                set_label_fmt(w->lbl_pbo_thermal, "N/A / %.0f\xC2\xB0""C",
+                              (double)m->thermal_limit_c);
         } else {
-            char buf[2048];
-            int  off = 0;
-            for (int i = 0; i < count; i++) {
-                float temp  = (i < m->core_temps_count) ? m->core_temps_c[i]  : 0;
-                float usage = (i < m->core_usage_count) ? m->core_usage_pct[i]: 0;
-                float freq  = (i < m->core_freq_count)  ? m->core_freq_mhz[i] : 0;
-                off += snprintf(buf+off, sizeof(buf)-off,
-                                "C%d: %.1f\xC2\xB0""C  %.0f%%  %.0fMHz\n",
-                                i, temp, usage, freq);
-            }
-            /* trim trailing newline */
-            if (off > 0 && buf[off-1] == '\n') buf[off-1] = '\0';
-            set_label_text(w->lbl_core_temps, buf);
+            set_label_text(w->lbl_pbo_thermal, "N/A");
         }
     }
 

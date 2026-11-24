@@ -76,14 +76,23 @@ typedef struct {
     GtkWidget *lbl_vid;
     GtkWidget *lbl_core_volt[MAX_CORES];
     GtkWidget *lbl_core_volt_lbl[MAX_CORES]; /* row label widgets for show/hide */
+    /* merged core table extra columns: °C | OS load | MHz | W | C0% | CC6% */
+    GtkWidget *lbl_core_t[MAX_CORES];        /* °C per core (kernel)          */
+    GtkWidget *lbl_core_load[MAX_CORES];     /* OS load %                     */
+    GtkWidget *lbl_core_freq[MAX_CORES];     /* MHz (cpufreq)                 */
+    GtkWidget *lbl_core_pw[MAX_CORES];       /* W  (SMU PM table)             */
+    GtkWidget *lbl_core_c0[MAX_CORES];       /* C0% (SMU PM table)            */
+    GtkWidget *lbl_core_cc6[MAX_CORES];      /* CC6% (SMU PM table)           */
     int        cpu_core_volt_rows;
 
     /* CPU tab — Temperatures (lbl_tdie = single-line temps blob) */
     GtkWidget *lbl_tdie;
-    GtkWidget *lbl_core_temps;
 
     /* CPU tab — Fans */
     GtkWidget *lbl_fans;
+
+    /* CPU tab — PBO limits (current / limit pairs) */
+    GtkWidget *lbl_pbo_ppt, *lbl_pbo_tdc, *lbl_pbo_edc, *lbl_pbo_thermal;
 
     /* Benchmark tab — RAM */
     GtkWidget *btn_bench_run;

@@ -92,3 +92,33 @@ Apache-2.0 code when the distributor chooses it); the required Apache-2.0
 notices are preserved above and in the source headers of every file that
 contains ported logic, and the unmodified Apache-2.0 text is shipped in
 `Linux/licenses/`.
+
+## `Linux/src/pm_layouts.c` / `Linux/src/pm_table.c` — PM Table layouts
+
+The unified PM Table layout registry consolidates published index maps from:
+
+- **ZenStates-Core** — https://github.com/irusanov/ZenStates-Core
+  commit `869b7e8257`, `Hardware/PowerTable.cs` (GPL-3.0; same license family
+  as this project). Clock/rail/SVI3 byte offsets and per-version table sizes.
+- **ZenMaster wiki** — "PM Table and Telemetry" page,
+  https://github.com/HorizonUnix/ZenMaster/wiki/PM-Table-and-Monitoring.
+  Per-architecture per-core base offsets, size matrix, down-fused core
+  filtering thresholds.
+- **LibreHardwareMonitor** — https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
+  commit `9e2d677cef` (MPL-2.0), `Hardware/RyzenSMU.cs` (Raven/Matisse/Vermeer
+  sensor index registry) and `Hardware/Cpu/Amd17Cpu.cs`
+  (`GetPerCoreBaseIndices`: Granite Ridge 0x621202 per-core bases). Only
+  index facts were used, no code copied.
+- **gnr-smu** — https://github.com/Kyworn/gnr-smu commit `def79d66d5`
+  (MIT, Copyright (c) 2026 Zorko): live-validated Granite Ridge
+  (0x620205/0x620105) and Vermeer (0x380905) mappings, confidence semantics,
+  and the fused-slot fail-closed methodology. `Linux/tests/fixtures/vermeer/`
+  holds 13 of its real 0x380905 capture fixtures; its MIT license text is
+  bundled as `Linux/tests/fixtures/vermeer/LICENSE.gnr-smu`.
+- **RyzenAdj** — https://github.com/FlyGoat/RyzenAdj commit `44438e1ba2`
+  (LGPL-3.0): cross-check of Strix Point clock offsets and the Van Gogh size.
+
+No implementation code was copied into C except facts (indices, sizes,
+thresholds) and short derived comments; where gnr-smu documentation wording
+influenced comments it is cited. Index conflicts between sources are listed
+explicitly in `Linux/docs/SMU_PM_TABLE_MAP.md` — nothing was silently chosen.

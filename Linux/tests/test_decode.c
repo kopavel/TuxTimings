@@ -5,6 +5,8 @@
  */
 
 #include "../src/dram_decode.h"
+#include "../src/pm_table.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -253,6 +255,246 @@ static void test_aod_parse(void)
     free(t);
 }
 
+/* ── unified PM table decoder tests ────────────────────────────────────
+ * Layout registry: src/pm_layouts.c; golden values from live dumps and
+ * gnr-smu fixtures (tests/fixtures/vermeer/, MIT, see LICENSE.gnr-smu). */
+
+static void fill_gnr620205(float *t)
+{
+    memset(t, 0, 613 * sizeof(float));
+    /* zone 0 — live 9950X DEBUG values */
+    t[2] = 200.0f;  t[3] = 32.152691f;
+    t[8] = 160.0f;  t[9] = 3.657917f;
+    t[10] = 95.0f;  t[11] = 54.221508f;
+    t[63] = 225.0f; t[64] = 11.75f;          /* 64 is candidate-only */
+    t[16] = 1.2f;   t[18] = 1.0f;  t[19] = 0.9f;
+    t[20] = 25.0f;  t[21] = 4.0f;  t[22] = 1.0f; t[23] = 0.5f;
+    t[26] = 32.162151f;                       /* socket power */
+    /* SVI3 block @48, stride 5: VID, V, I, I2, temp */
+    for (int r = 0; r < 3; r++) {
+        t[48 + r * 5] = 0.90f + 0.01f * r;    /* VID      */
+        t[49 + r * 5] = 0.91f + 0.01f * r;    /* voltage  */
+        t[50 + r * 5] = 30.0f + r;            /* current  */
+        t[52 + r * 5] = 55.0f + r;            /* VRM temp */
+    }
+    t[71] = 2000.0f; t[75] = 3000.0f; t[79] = 3000.0f;
+    t[83] = 1.1f;
+    t[259] = 0.75f; t[261] = 0.75f; t[269] = 0.85f; t[271] = 0.92f;
+    for (int i = 0; i < 16; i++) {
+        t[301 + i] = 0.05f + 0.01f * i;       /* core power    */
+        t[317 + i] = 0.85f + 0.005f * i;      /* core voltage  */
+        t[333 + i] = 45.0f + i;               /* core temp     */
+        t[349 + i] = 3.5f + 0.05f * i;        /* core clock    */
+        t[365 + i] = 2.0f;                    /* activity/eff  */
+        t[381 + i] = 1.0f + 0.1f * i;         /* C0  %         */
+        t[397 + i] = 2.0f + 0.1f * i;         /* CC1 %         */
+        t[413 + i] = 96.5f - 0.2f * i;        /* CC6 %         */
+    }
+    t[445] = 5.7f;                            /* boost cand.   */
+    t[595] = 50.0f; t[596] = 49.0f;           /* L3 temp cand. */
+    t[611] = 48.0f; t[612] = 48.0f;
+}
+
+static void test_pm_gnr620205_golden(void)
+{
+    float t[613];
+    smu_metrics_t m;
+    int refused = -1;
+    fill_gnr620205(t);
+
+    const pm_layout_t *L = pm_table_decode(0x620205, t, 613, 16, &m, &refused);
+    EXPECT(L && strcmp(L->name, "Granite Ridge Dual-CCD") == 0, "layout name");
+    EXPECT(refused == 0, "fused check must pass on golden table");
+    EXPECT(m.has_ppt_limit && fabsf(m.ppt_limit_w - 200.0f) < 0.01f, "PPT limit %.2f", m.ppt_limit_w);
+    EXPECT(fabsf(m.ppt_w - 32.152691f) < 0.01f, "PPT current %.4f", m.ppt_w);
+    EXPECT(m.has_tdc_limit && fabsf(m.tdc_limit_a - 160.0f) < 0.01f, "TDC limit");
+    EXPECT(m.has_tdc_current && fabsf(m.tdc_current_a - 3.657917f) < 0.01f, "TDC current");
+    EXPECT(m.has_thermal_limit && fabsf(m.thermal_limit_c - 95.0f) < 0.01f, "Thermal limit");
+    EXPECT(m.has_tctl && fabsf(m.tctl_c - 54.221508f) < 0.01f, "Tctl from PM 11");
+    EXPECT(m.has_edc_limit && fabsf(m.edc_limit_a - 225.0f) < 0.01f, "EDC limit");
+    /* EDC current (index 64) is CANDIDATE: never in metrics/GUI — the debug
+     * table test below covers that it stays visible there */
+    EXPECT(m.has_socket_power && fabsf(m.package_power_w - 32.162f) < 0.01f, "socket power 26");
+    EXPECT(fabsf(m.vid - 0.9f) < 0.005f, "VID agg 19 = %.3f", m.vid);
+    EXPECT(fabsf(m.fclk_mhz - 2000.0f) < 0.5f, "FCLK");
+    EXPECT(fabsf(m.uclk_mhz - 3000.0f) < 0.5f, "UCLK");
+    EXPECT(fabsf(m.mclk_mhz - 3000.0f) < 0.5f, "MCLK");
+    EXPECT(fabsf(m.vddp - 0.85f) < 0.005f, "VDDP 269");
+    EXPECT(fabsf(m.vcore - 0.92f) < 0.005f, "VCORE 271");
+    EXPECT(fabsf(m.vdd_misc - 0.92f) < 0.005f, "VDD_MISC 58 (MISC VID)");
+    EXPECT(m.core_power_count == 16, "core power count %d", m.core_power_count);
+    EXPECT(fabsf(m.core_power_w[5] - 0.10f) < 0.005f, "core power [5]");
+    EXPECT(fabsf(m.core_voltages[15] - 0.925f) < 0.005f, "core volt [15]");
+    /* PM clock block @349 is CONFLICTED (GN: core_fit; live disagreement
+     * with cpufreq) → must stay undecoded */
+    EXPECT(m.core_clocks_count == 0, "conflicted clock block must not decode (%d)",
+           m.core_clocks_count);
+    EXPECT(m.core_clock_mhz == 0.0f, "no aggregate clock from conflicted block");
+    EXPECT(m.core_res_count == 16, "residency count %d", m.core_res_count);
+    for (int i = 0; i < 16; i++) {
+        float sum = m.core_c0_pct[i] + m.core_cc1_pct[i] + m.core_cc6_pct[i];
+        EXPECT(sum > 94.0f && sum < 106.0f, "core %d residency sum %.2f", i, sum);
+    }
+}
+
+static void test_pm_unsupported_bounds_nan(void)
+{
+    float t[613];
+    smu_metrics_t m;
+    int refused = 0;
+
+    /* Unknown version → no layout, nothing decoded, NO fallback */
+    fill_gnr620205(t);
+    const pm_layout_t *L = pm_table_decode(0x00000042, t, 613, 16, &m, &refused);
+    EXPECT(L == NULL, "unknown version must be unsupported");
+    EXPECT(!m.has_ppt_limit && m.fclk_mhz == 0.0f && m.core_voltages_count == 0,
+           "unknown version must leave everything unavailable");
+
+    /* Truncated table: scalars beyond the cut stay unavailable, per-core
+     * blocks (base 301) are refused entirely rather than invented */
+    fill_gnr620205(t);
+    L = pm_table_decode(0x620205, t, 200, 16, &m, &refused);
+    EXPECT(L != NULL, "version still supported");
+    EXPECT(m.has_socket_power, "socket power 26 inside truncation");
+    EXPECT(m.vddp == 0.0f, "vddp 269 outside truncation must be N/A");
+    EXPECT(refused == 1, "per-core refused on truncated table");
+    EXPECT(m.core_power_count == 0 && m.core_voltages_count == 0,
+           "truncated per-core counts must be 0");
+
+    /* NaN / Inf / out-of-range scalars never surface */
+    fill_gnr620205(t);
+    t[2] = NAN; t[3] = INFINITY; t[11] = NAN; t[63] = 70000.0f;
+    pm_table_decode(0x620205, t, 613, 16, &m, &refused);
+    EXPECT(!m.has_ppt_limit, "NaN limit rejected");
+    EXPECT(m.ppt_w == 0.0f, "Inf current rejected");
+    EXPECT(!m.has_tctl, "NaN Tctl rejected");
+    EXPECT(!m.has_edc_limit, "implausible EDC limit rejected");
+
+    /* NaN lane: row stays listed, cell becomes 0 → UI renders N/A */
+    fill_gnr620205(t);
+    t[333 + 7] = NAN;
+    pm_table_decode(0x620205, t, 613, 16, &m, &refused);
+    EXPECT(m.core_temps_c[7] == 0.0f, "NaN temp lane zeroed for UI");
+}
+
+static void test_pm_gnr620105_single(void)
+{
+    float t[457];
+    smu_metrics_t m;
+    int refused = -1;
+    memset(t, 0, sizeof(t));
+    t[2] = 162.0f; t[3] = 20.0f; t[8] = 120.0f; t[9] = 2.0f;
+    t[10] = 89.0f; t[11] = 40.0f; t[63] = 180.0f;
+    t[20] = 18.0f;                       /* pkg power (single-CCD) */
+    t[71] = 2100.0f; t[75] = 3200.0f; t[79] = 3200.0f;
+    for (int i = 0; i < 8; i++) {
+        t[309 + i] = 0.88f + 0.005f * i; /* voltage (309, NOT author 301) */
+        t[317 + i] = 40.0f + i;          /* temp     */
+        t[325 + i] = 3.6f + 0.05f * i;   /* clock    */
+        t[333 + i] = 0.2f + 0.05f * i;   /* power    */
+        t[341 + i] = 1.0f;               /* C0 — conflicted: must NOT decode */
+        t[349 + i] = 1.0f;               /* CC1 — conflicted */
+        t[357 + i] = 98.0f;              /* CC6 — conflicted */
+    }
+    const pm_layout_t *L = pm_table_decode(0x620105, t, 457, 8, &m, &refused);
+    EXPECT(L != NULL && refused == 0, "single-CCD layout + fused check");
+    EXPECT(m.core_voltages_count == 8, "X3D volt count %d", m.core_voltages_count);
+    EXPECT(fabsf(m.core_voltages[0] - 0.88f) < 0.005f, "X3D volt base must be 309");
+    EXPECT(fabsf(m.core_power_w[1] - 0.25f) < 0.005f, "X3D power base 333");
+    EXPECT(m.core_res_count == 0, "residency CONFLICTED must stay undecoded");
+    EXPECT(m.vddp == 0.0f, "VDDP@269 conflicted → N/A");
+    EXPECT(m.has_socket_power && fabsf(m.package_power_w - 18.0f) < 0.01f,
+           "X3D socket power @20");
+}
+
+static int load_fixture(const char *rel, float *t, int max)
+{
+    char paths[2][512];
+    snprintf(paths[0], sizeof(paths[0]), "%s", rel);
+    snprintf(paths[1], sizeof(paths[1]), "%s/%s",
+             getenv("TUXTEST_DIR") ? getenv("TUXTEST_DIR") : ".", rel);
+    for (int i = 0; i < 2; i++) {
+        FILE *f = fopen(paths[i], "rb");
+        if (!f) continue;
+        int n = (int)fread(t, sizeof(float), (size_t)max, f);
+        fclose(f);
+        return n;
+    }
+    return -1;
+}
+
+static void test_pm_vermeer_fixture(void)
+{
+    float t[372];
+    smu_metrics_t m;
+    int refused = -1;
+    int n = load_fixture("tests/fixtures/vermeer/idle_01.bin", t, 372);
+    if (n != 372) {
+        printf("SKIP vermeer fixture (not found, got %d)\n", n);
+        return;
+    }
+    const pm_layout_t *L = pm_table_decode(0x380905, t, n, 6, &m, &refused);
+    EXPECT(L != NULL && refused == 0, "5600X layout accepted on validated fixture");
+    EXPECT(m.has_socket_power && fabsf(m.package_power_w - 26.938f) < 0.05f,
+           "socket power (RAPL-validated index 1) = %.3f", m.package_power_w);
+    EXPECT(fabsf(m.vid - 1.3747f) < 0.01f, "VID index 10");
+    EXPECT(fabsf(m.fclk_mhz - 1800.0f) < 1.0f, "FCLK 48");
+    EXPECT(!m.has_tctl, "Vermeer tctl must stay unmapped (index 11 is not °C)");
+    EXPECT(!m.has_ppt_limit, "Vermeer limits unpublished → N/A");
+    /* slots 2-3 fused: 6 present cores; Linux core 2 = SMU slot 4 */
+    EXPECT(m.core_voltages_count == 6, "5600X volt count %d", m.core_voltages_count);
+    EXPECT(fabsf(m.core_voltages[2] - 0.9392f) < 0.005f,
+           "linux core2 must map to slot 4 (0.9392V), got %.4f", m.core_voltages[2]);
+    EXPECT(fabsf(m.core_temps_c[2] - 38.18f) < 0.1f, "slot-mapped temp");
+    for (int i = 0; i < m.core_res_count; i++) {
+        float sum = m.core_c0_pct[i] + m.core_cc1_pct[i] + m.core_cc6_pct[i];
+        EXPECT(sum > 98.0f && sum < 102.0f, "5600X core %d residency sum %.2f", i, sum);
+    }
+
+    /* Fail-closed: a mapped slot reading zero disagrees with the fused
+     * layout → refuse per-core entirely */
+    float bad[372];
+    memcpy(bad, t, sizeof(bad));
+    bad[172 + 4] = 0.0f;                 /* present slot core-2 power zero */
+    refused = -1;
+    pm_table_decode(0x380905, bad, 372, 6, &m, &refused);
+    EXPECT(refused == 1 && m.core_voltages_count == 0,
+           "must refuse per-core on slot-map mismatch");
+    memcpy(bad, t, sizeof(bad));
+    bad[172 + 2] = 5.0f;                 /* fused slot non-zero */
+    refused = -1;
+    pm_table_decode(0x380905, bad, 372, 6, &m, &refused);
+    EXPECT(refused == 1, "must refuse per-core when fused slots are alive");
+}
+
+static void dbg_cb(void *ctx, const char *fmt, ...)
+{
+    char *buf = (char *)ctx;
+    size_t off = strlen(buf);
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf + off, 65536 - off, fmt, ap);
+    va_end(ap);
+}
+
+static void test_pm_debug_emit(void)
+{
+    float t[613];
+    char buf[65536];
+    fill_gnr620205(t);
+    buf[0] = '\0';
+    pm_debug_emit(dbg_cb, buf, 0x620205, t, 613, 16);
+    EXPECT(strstr(buf, "Granite Ridge Dual-CCD") != NULL, "debug: layout name");
+    EXPECT(strstr(buf, "confirmed") != NULL, "debug: confirmed rows");
+    EXPECT(strstr(buf, "CANDIDATE") != NULL, "debug: candidate rows shown");
+    EXPECT(strstr(buf, "CONFLICTED") != NULL ||
+           strstr(buf, "conflict") != NULL, "debug: conflicts listed");
+    EXPECT(strstr(buf, "0x0008") != NULL, "debug: byte offset of index 2");
+    buf[0] = '\0';
+    pm_debug_emit(dbg_cb, buf, 0x00000001, t, 613, 16);
+    EXPECT(strstr(buf, "UNSUPPORTED") != NULL, "debug: unsupported version");
+}
+
 int main(void)
 {
     test_ddr5_primary();
@@ -261,6 +503,11 @@ int main(void)
     test_ddr4_path();
     test_electrical_decoders();
     test_aod_parse();
+    test_pm_gnr620205_golden();
+    test_pm_unsupported_bounds_nan();
+    test_pm_gnr620105_single();
+    test_pm_vermeer_fixture();
+    test_pm_debug_emit();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

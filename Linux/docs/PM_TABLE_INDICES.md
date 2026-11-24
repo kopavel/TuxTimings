@@ -1,5 +1,13 @@
 ## PM table indices summary
 
+> **Superseded** by `SMU_PM_TABLE_MAP.md` (unified registry: sources,
+> per-version field tables, conflict record). Corrections found since these
+> notes: index 220 is NOT socket power (321 W at idle — rejected; use 26 on
+> 0x620205, 20 on 0x620105); index 11 on Granite is Tctl (k10temp-matched),
+> not an IOD hotspot, and on Vermeer it is not a temperature at all;
+> indices 2/8/63 are PPT/TDC/EDC limits, 9 their currents, 10 the thermal
+> limit; 301..316 are per-core power (W).
+
 This file documents the PM table indices used in `Linux/src/pm_table.c`. Indices are zero-based entries in the SMU PM table float array.
 
 ---

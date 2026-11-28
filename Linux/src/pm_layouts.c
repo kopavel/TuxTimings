@@ -95,10 +95,9 @@ static const pm_field_t gnr_dual_fields[] = {
        SRC_TX "; " SRC_GN "; " SRC_LHa "; " SRC_ZM " (0x4F4)"),
     FA(PM_M_CORE_TEMP,    333, 16, PM_U_C,   1.0f,    PM_CONFIRMED,
        SRC_TX "; " SRC_GN "; " SRC_LHa "; " SRC_ZM " (0x534)"),
-    FAC(PM_M_CORE_CLK,    349, 16, PM_U_GHZ, 1.0f,    PM_CONFLICTED,
-       SRC_LHa " (Frequency=349); " SRC_ZM " (0x574)",
-       "GN names this core_fit; live check: values disagree with cpufreq "
-       "per-core freq — clock identity NOT established, debug-only"),
+    FAC(PM_M_CORE_CLK,    349, 16, PM_U_GHZ, 1.0f,    PM_SOURCE_DOCUMENTED,
+       SRC_LHa " (Frequency=349); " SRC_ZM " (0x574); " SRC_LV,
+       "9950X all-core load agrees with cpufreq within ~50 MHz; idle semantics unresolved; GN names core_fit"),
     FAC(PM_M_CORE_EFF_CLK,365, 16, PM_U_GHZ, 1.0f,    PM_CANDIDATE,
        SRC_ZM " (0x5B4)", "GN names 365 'activity_metric'"),
     FA(PM_M_CORE_C0,      381, 16, PM_U_PCT, 1.0f,    PM_CONFIRMED,

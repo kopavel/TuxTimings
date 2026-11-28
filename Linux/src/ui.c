@@ -1607,7 +1607,29 @@ static void refresh_developer(void)
     GtkAdjustment *v = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(developer_page));
     GtkAdjustment *h = gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(developer_page));
     double y = gtk_adjustment_get_value(v), x = gtk_adjustment_get_value(h);
-    gtk_text_buffer_set_text(developer_buffer, dump ? dump : "PM table unavailable", -1);
+    /* Update changed lines in place; replacing the whole buffer resets
+     * GtkTextView's scroll anchor during deferred layout. */
+    const char *next = dump ? dump : "PM table unavailable";
+    gchar **lines = g_strsplit(next, "\n", -1);
+    int n = (int)g_strv_length(lines);
+    if (gtk_text_buffer_get_line_count(developer_buffer) != n) {
+        gtk_text_buffer_set_text(developer_buffer, next, -1);
+    } else {
+        for (int i = 0; i < n; i++) {
+            GtkTextIter start, end;
+            gtk_text_buffer_get_iter_at_line(developer_buffer, &start, i);
+            end = start;
+            if (!gtk_text_iter_ends_line(&end))
+                gtk_text_iter_forward_to_line_end(&end);
+            gchar *previous = gtk_text_buffer_get_text(developer_buffer, &start, &end, FALSE);
+            if (g_strcmp0(previous, lines[i]) != 0) {
+                gtk_text_buffer_delete(developer_buffer, &start, &end);
+                gtk_text_buffer_insert(developer_buffer, &start, lines[i], -1);
+            }
+            g_free(previous);
+        }
+    }
+    g_strfreev(lines);
     gtk_adjustment_set_value(v, y);
     gtk_adjustment_set_value(h, x);
     free(dump);

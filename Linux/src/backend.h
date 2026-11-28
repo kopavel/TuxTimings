@@ -19,6 +19,9 @@ void backend_cleanup(void);
  * Caller must free(). Returns NULL on failure. */
 char *backend_read_debug_dump(void);
 
+/* Live decoded PM table, including unverified fields; caller frees. */
+char *backend_read_pm_debug(void);
+
 /* ── SPD (JESD400-5) profile access ─────────────────────────────────────
  * Enumerates DDR5 SPD EEPROMs exposed by the kernel (spd5118/at24
  * sysfs `eeprom` files under /sys/bus/i2c/devices/), decodes each and

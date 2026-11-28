@@ -1597,7 +1597,12 @@ static void refresh_developer(void)
 {
     if (!developer_page || !gtk_widget_get_visible(developer_page)) return;
     char *dump = backend_read_pm_debug();
+    GtkAdjustment *v = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(developer_page));
+    GtkAdjustment *h = gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(developer_page));
+    double y = gtk_adjustment_get_value(v), x = gtk_adjustment_get_value(h);
     gtk_text_buffer_set_text(developer_buffer, dump ? dump : "PM table unavailable", -1);
+    gtk_adjustment_set_value(v, y);
+    gtk_adjustment_set_value(h, x);
     free(dump);
 }
 
@@ -1923,7 +1928,7 @@ static void on_activate(GtkApplication *app, gpointer user_data)
     g_signal_connect(btn_debug, "clicked", G_CALLBACK(on_debug_dump), w->window);
     gtk_box_append(GTK_BOX(header_top), btn_debug);
     GtkWidget *developer_check = gtk_check_button_new_with_label("Developer mode");
-    gtk_widget_set_tooltip_text(developer_check, "Show live PM table including unverified metrics");
+    gtk_widget_set_tooltip_text(developer_check, "Show only unverified live PM table metrics");
     gtk_box_append(GTK_BOX(header), header_top);
     gtk_box_append(GTK_BOX(header), developer_check);
 

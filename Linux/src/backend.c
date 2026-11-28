@@ -819,13 +819,62 @@ static int read_fans(fan_reading_t *fans, int *count)
 
 /* ── /proc/stat per-core usage ──────────────────────────────────────── */
 
+/* Map logical CPUs to physical cores by the first SMT sibling.
+ * Dense core indices follow ascending Linux CPU IDs, including SMT-off. */
+static int s_cpu_core[MAX_LOGICAL_CPUS];
+static int s_core_count = -1;
+
+static int core_topology(void)
+{
+    if (s_core_count >= 0) return s_core_count;
+    int leaders[MAX_CORES];
+    s_core_count = 0;
+    for (int cpu = 0; cpu < MAX_LOGICAL_CPUS; cpu++) {
+        s_cpu_core[cpu] = -1;
+        char path[256];
+        snprintf(path, sizeof(path),
+                 "/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list", cpu);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        int leader = -1;
+        int ok = fscanf(f, "%d", &leader);
+        fclose(f);
+        if (ok != 1 || leader < 0 || leader >= MAX_LOGICAL_CPUS) continue;
+        int c = 0;
+        while (c < s_core_count && leaders[c] != leader) c++;
+        if (c == s_core_count) {
+            if (c >= MAX_CORES) continue;
+            leaders[c] = leader;
+            s_core_count++;
+        }
+        s_cpu_core[cpu] = c;
+    }
+    return s_core_count;
+}
+
+static int aggregate_core_values(const float *values, const bool *valid, float *out)
+{
+    int count = core_topology();
+    int samples[MAX_CORES] = {0};
+    memset(out, 0, MAX_CORES * sizeof(*out));
+    for (int cpu = 0; cpu < MAX_LOGICAL_CPUS; cpu++) {
+        int c = s_cpu_core[cpu];
+        if (c < 0 || !valid[cpu]) continue;
+        out[c] += values[cpu];
+        samples[c]++;
+    }
+    for (int c = 0; c < count; c++)
+        if (samples[c]) out[c] /= samples[c];
+    return count;
+}
+
 static void read_core_usage(smu_metrics_t *m)
 {
     FILE *f = fopen("/proc/stat", "r");
     if (!f) return;
 
     float logical_usage[MAX_LOGICAL_CPUS];
-    int logical_count = 0;
+    bool valid[MAX_LOGICAL_CPUS] = {false};
     memset(logical_usage, 0, sizeof(logical_usage));
 
     char line[512];
@@ -861,22 +910,12 @@ static void read_core_usage(smu_metrics_t *m)
 
         if (cpuid < MAX_LOGICAL_CPUS) {
             logical_usage[cpuid] = usage;
-            if (cpuid >= logical_count) logical_count = cpuid + 1;
+            valid[cpuid] = true;
         }
     }
     fclose(f);
 
-    /* Aggregate SMT pairs: core N = avg(cpu 2N, cpu 2N+1) */
-    int max_core = (logical_count + 1) / 2;
-    if (max_core > MAX_CORES) max_core = MAX_CORES;
-    for (int c = 0; c < max_core; c++) {
-        int l0 = c * 2, l1 = c * 2 + 1;
-        float sum = 0; int cnt = 0;
-        if (l0 < logical_count) { sum += logical_usage[l0]; cnt++; }
-        if (l1 < logical_count) { sum += logical_usage[l1]; cnt++; }
-        m->core_usage_pct[c] = cnt > 0 ? sum / cnt : 0;
-    }
-    m->core_usage_count = max_core;
+    m->core_usage_count = aggregate_core_values(logical_usage, valid, m->core_usage_pct);
 }
 
 /* ── Per-core frequency from cpufreq ────────────────────────────────── */
@@ -884,31 +923,19 @@ static void read_core_usage(smu_metrics_t *m)
 static void read_core_freq(smu_metrics_t *m)
 {
     float logical_freq[MAX_LOGICAL_CPUS];
-    int logical_count = 0;
+    bool valid[MAX_LOGICAL_CPUS] = {false};
     memset(logical_freq, 0, sizeof(logical_freq));
 
     for (int i = 0; i < MAX_LOGICAL_CPUS; i++) {
         char path[256];
         snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", i);
         int khz = read_int_file(path);
-        if (khz <= 0) {
-            if (i > 0) break;
-            continue;
-        }
+        if (khz <= 0) continue;
         logical_freq[i] = khz / 1000.0f;
-        if (i >= logical_count) logical_count = i + 1;
+        valid[i] = true;
     }
 
-    int max_core = (logical_count + 1) / 2;
-    if (max_core > MAX_CORES) max_core = MAX_CORES;
-    for (int c = 0; c < max_core; c++) {
-        int l0 = c * 2, l1 = c * 2 + 1;
-        float sum = 0; int cnt = 0;
-        if (l0 < logical_count && logical_freq[l0] > 0) { sum += logical_freq[l0]; cnt++; }
-        if (l1 < logical_count && logical_freq[l1] > 0) { sum += logical_freq[l1]; cnt++; }
-        m->core_freq_mhz[c] = cnt > 0 ? sum / cnt : 0;
-    }
-    m->core_freq_count = max_core;
+    m->core_freq_count = aggregate_core_values(logical_freq, valid, m->core_freq_mhz);
 }
 
 /* ── BCLK from DMI Type 4 (External Clock field) ───────────────────── */

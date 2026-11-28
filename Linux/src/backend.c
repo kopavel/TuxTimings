@@ -1209,7 +1209,7 @@ char *backend_read_pm_debug(void)
     int count = 0;
     uint32_t version = read_smu_uint32("pm_table_version");
     read_pm_table_raw(&table, &count);
-    pm_debug_emit(pm_dump_emit, &ctx, version, table, count, s_physical_cores);
+    pm_debug_emit_unverified(pm_dump_emit, &ctx, version, table, count, s_physical_cores);
     free(table);
     return buf;
 }

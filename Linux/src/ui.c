@@ -1525,8 +1525,7 @@ static void refresh_ui(app_widgets_t *w)
     /* CPU tab — PBO / power limits: current / limit / utilization.
      * Utilization only when BOTH operands valid and limit > 0; high
      * utilization is an estimate of the limiting factor, NOT a measured
-     * throttling flag (no throttle-flag source is published). EDC current
-     * stays hidden: its candidate index is debug-only. */
+     * throttling flag (no throttle-flag source is published). */
     {
         char cur[32], lim[32], util[24];
         util[0] = '\0';
@@ -1553,9 +1552,14 @@ static void refresh_ui(app_widgets_t *w)
         set_label_fmt(w->lbl_pbo_tdc, "%s / %s%s", cur, lim, util);
 
         util[0] = '\0';
-        snprintf(cur, sizeof(cur), "N/A");   /* current is candidate-only */
-        if (m->has_edc_limit) snprintf(lim, sizeof(lim), "%.0fA", (double)m->edc_limit_a);
-        else                  snprintf(lim, sizeof(lim), "N/A");
+        if (m->has_edc_current) snprintf(cur, sizeof(cur), "%.2fA", (double)m->edc_current_a);
+        else                    snprintf(cur, sizeof(cur), "N/A");
+        if (m->has_edc_limit) {
+            snprintf(lim, sizeof(lim), "%.0fA", (double)m->edc_limit_a);
+            if (m->has_edc_current && m->edc_limit_a > 0.0f)
+                snprintf(util, sizeof(util), "  (%.0f%%)",
+                         100.0 * m->edc_current_a / m->edc_limit_a);
+        } else snprintf(lim, sizeof(lim), "N/A");
         set_label_fmt(w->lbl_pbo_edc, "%s / %s%s", cur, lim, util);
 
         if (m->has_thermal_limit) {

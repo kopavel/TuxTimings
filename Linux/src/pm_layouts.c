@@ -664,11 +664,11 @@ static const pm_field_t rembrandt_450005_fields[] = {
     F0(PM_M_FCLK, 428, PM_U_MHZ, 1.0f, PM_SOURCE_DOCUMENTED, SRC_ZS " (0x6B0)"),
     F0(PM_M_UCLK, 429, PM_U_MHZ, 1.0f, PM_SOURCE_DOCUMENTED, SRC_ZS " (0x6B4)"),
     F0(PM_M_MCLK, 430, PM_U_MHZ, 1.0f, PM_SOURCE_DOCUMENTED, SRC_ZS " (0x6B8)"),
-    F0(PM_M_VDDP, 565, PM_U_V, 1.0f, PM_SOURCE_DOCUMENTED, SRC_ZS " (0x8D4)"),
-    FA(PM_M_CORE_POWER,   200, 8, PM_U_W,   1.0f, PM_SOURCE_DOCUMENTED, SRC_ZM " (0x320)"),
-    FA(PM_M_CORE_VOLTAGE, 208, 8, PM_U_V,   1.0f, PM_SOURCE_DOCUMENTED, SRC_ZM " (0x340)"),
-    FA(PM_M_CORE_TEMP,    216, 8, PM_U_C,   1.0f, PM_SOURCE_DOCUMENTED, SRC_ZM " (0x360)"),
-    FA(PM_M_CORE_CLK,     240, 8, PM_U_GHZ, 1.0f, PM_SOURCE_DOCUMENTED, SRC_ZM " (0x3C0)"),
+    F0C(PM_M_VDDP, 565, PM_U_V, 1.0f, PM_CANDIDATE, SRC_ZS, "Zero in issue #10 dump; unverified"),
+    FAC(PM_M_CORE_POWER, 219, 8, PM_U_W, 1.0f, PM_CANDIDATE, "upstream issue #10 (0x36C)", "Single 6900HS dump; needs workload validation"),
+    FAC(PM_M_CORE_VOLTAGE, 227, 8, PM_U_V, 1.0f, PM_CANDIDATE, "upstream issue #10 (0x38C)", "Single 6900HS dump; needs workload validation"),
+    FAC(PM_M_CORE_TEMP, 235, 8, PM_U_C, 1.0f, PM_CANDIDATE, "upstream issue #10 (0x3AC)", "Single 6900HS dump; needs workload validation"),
+    FAC(PM_M_CORE_CLK, 251, 8, PM_U_GHZ, 1.0f, PM_CANDIDATE, "upstream issue #10 (0x3EC)", "Single 6900HS dump; needs workload validation"),
 };
 
 /* Phoenix mobile 0x4C0001-4C0007 (ZS; SVI3 stride 4, no VRM temp) */
@@ -837,7 +837,7 @@ static const pm_layout_t g_layouts[] = {
     LAYOUT(0x450004, 0xAA4, "Rembrandt", "Rembrandt",
            8, 8, NULL, rembrandt_fields, "ZS clocks + ZM per-core"),
     LAYOUT(0x450005, 0xAB0, "Rembrandt 05-rev", "Rembrandt",
-           8, 8, NULL, rembrandt_450005_fields, "ZS clocks + ZM per-core"),
+           8, 8, NULL, rembrandt_450005_fields, "ZS clocks + issue #10 per-core candidates"),
     LAYOUT(0x4C0001, 0xB18, "Phoenix 01 (ZS: placeholder, unverified)", "Hawk/Phoenix",
            8, 8, NULL, phoenix_4c01_07_fields, "offsets copied from 4C0003 in ZS"),
     LAYOUT(0x4C0003, 0xB18, "Phoenix Point", "Hawk/Phoenix",

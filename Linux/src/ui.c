@@ -1927,10 +1927,7 @@ static void on_activate(GtkApplication *app, gpointer user_data)
     GtkWidget *btn_debug = gtk_button_new_with_label("Debug");
     g_signal_connect(btn_debug, "clicked", G_CALLBACK(on_debug_dump), w->window);
     gtk_box_append(GTK_BOX(header_top), btn_debug);
-    GtkWidget *developer_check = gtk_check_button_new_with_label("Developer mode");
-    gtk_widget_set_tooltip_text(developer_check, "Show only unverified live PM table metrics");
     gtk_box_append(GTK_BOX(header), header_top);
-    gtk_box_append(GTK_BOX(header), developer_check);
 
     w->lbl_codename = make_label("", "header-muted");
     gtk_box_append(GTK_BOX(header), w->lbl_codename);
@@ -1949,6 +1946,10 @@ static void on_activate(GtkApplication *app, gpointer user_data)
     /* Notebook (tabs) */
     GtkWidget *notebook = gtk_notebook_new();
     gtk_widget_set_vexpand(notebook, TRUE);
+    GtkWidget *developer_check = gtk_check_button_new();
+    gtk_widget_set_tooltip_text(developer_check, "Developer mode: live diagnostics");
+    gtk_notebook_set_action_widget(GTK_NOTEBOOK(notebook), developer_check, GTK_PACK_END);
+    gtk_widget_set_visible(developer_check, TRUE);
 
     GtkWidget *ram_tab = build_ram_tab(w);
     gtk_notebook_append_page(GTK_NOTEBOOK(notebook), ram_tab, gtk_label_new("RAM"));

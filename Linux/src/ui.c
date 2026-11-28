@@ -1589,12 +1589,32 @@ static void refresh_ui(app_widgets_t *w)
     spd_update_for_module(w);
 }
 
+/* Optional live developer view; never feeds unverified values into normal metrics. */
+static GtkWidget *developer_page;
+static GtkTextBuffer *developer_buffer;
+
+static void refresh_developer(void)
+{
+    if (!developer_page || !gtk_widget_get_visible(developer_page)) return;
+    char *dump = backend_read_pm_debug();
+    gtk_text_buffer_set_text(developer_buffer, dump ? dump : "PM table unavailable", -1);
+    free(dump);
+}
+
+static void on_developer_toggled(GtkCheckButton *button, gpointer data)
+{
+    (void)data;
+    gtk_widget_set_visible(developer_page, gtk_check_button_get_active(button));
+    refresh_developer();
+}
+
 /* Timer callback */
 static gboolean on_refresh(gpointer user_data)
 {
     setlocale(LC_NUMERIC, "C");
     app_widgets_t *w = (app_widgets_t *)user_data;
     refresh_ui(w);
+    refresh_developer();
     return G_SOURCE_CONTINUE;
 }
 
@@ -1902,8 +1922,10 @@ static void on_activate(GtkApplication *app, gpointer user_data)
     GtkWidget *btn_debug = gtk_button_new_with_label("Debug");
     g_signal_connect(btn_debug, "clicked", G_CALLBACK(on_debug_dump), w->window);
     gtk_box_append(GTK_BOX(header_top), btn_debug);
-
+    GtkWidget *developer_check = gtk_check_button_new_with_label("Developer mode");
+    gtk_widget_set_tooltip_text(developer_check, "Show live PM table including unverified metrics");
     gtk_box_append(GTK_BOX(header), header_top);
+    gtk_box_append(GTK_BOX(header), developer_check);
 
     w->lbl_codename = make_label("", "header-muted");
     gtk_box_append(GTK_BOX(header), w->lbl_codename);
@@ -1942,6 +1964,16 @@ static void on_activate(GtkApplication *app, gpointer user_data)
     gtk_notebook_append_page(GTK_NOTEBOOK(notebook), bench_scroll, gtk_label_new("Benchmark"));
 
     /* SPD lives in the RAM tab's second row (Timings | Config/Electrical | SPD) */
+
+    developer_page = gtk_scrolled_window_new();
+    GtkWidget *developer_text = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(developer_text), FALSE);
+    gtk_text_view_set_monospace(GTK_TEXT_VIEW(developer_text), TRUE);
+    developer_buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(developer_text));
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(developer_page), developer_text);
+    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), developer_page, gtk_label_new("PM Table (Developer)"));
+    gtk_widget_set_visible(developer_page, FALSE);
+    g_signal_connect(developer_check, "toggled", G_CALLBACK(on_developer_toggled), NULL);
 
     gtk_box_append(GTK_BOX(main_box), notebook);
 

@@ -188,6 +188,7 @@ static void apply_scalar(smu_metrics_t *m, uint16_t metric, float v)
     case PM_M_TDC_LIMIT:    m->tdc_limit_a = v;      m->has_tdc_limit = true; break;
     case PM_M_TDC_CURRENT:  m->tdc_current_a = v;    m->has_tdc_current = true; break;
     case PM_M_EDC_LIMIT:    m->edc_limit_a = v;      m->has_edc_limit = true; break;
+    case PM_M_EDC_CURRENT:  m->edc_current_a = v;    m->has_edc_current = true; break;
     case PM_M_THM_LIMIT:    m->thermal_limit_c = v;  m->has_thermal_limit = true; break;
     case PM_M_TCTL:
         if (!m->has_tctl) { m->tctl_c = v; m->has_tctl = true; }

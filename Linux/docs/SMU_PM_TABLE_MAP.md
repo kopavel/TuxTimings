@@ -45,8 +45,7 @@ parse `LAYOUT()`/`F0`/`FA` rows — keep both in sync).
 ## GUI-visible vs debug-only rules
 
 Candidates and conflicted fields never reach `smu_metrics_t` (see
-`pm_table_decode()`). Notably: current-EDC (index 64 on Granite, per GN),
-the per-core clock block on dual-CCD Granite (349 — see conflict 8), CCD
+`pm_table_decode()`). Notably: the per-core clock block on dual-CCD Granite (349 — see conflict 8), CCD
 L3-temperature lanes, per-core residency on 0x620105, vsoc on
 Vermeer/Cezanne/Renoir/Phoenix, uclk/mclk order on Matisse and
 0x540104, `vddp` on 0x620105, and the author's legacy zone-0 “PPT” on Zen 2/3
@@ -147,8 +146,9 @@ Vermeer/Cezanne/Renoir/Phoenix, uclk/mclk order on Matisse and
 1. **Granite zone-0 pair semantics** — GN documents `(LIMIT, VALUE)` pairs at
    2/3 (PPT), 8/9 (TDC), 10/11 (thermal), 63/64 (EDC), corrected
    2026-07-30; older lore mislabeled 8/10. Adopted (live 9950X values agree).
-2. **Index 64 “EDC current”** — GN: behavioural evidence only →
-   CANDIDATE, debug-only.
+2. **Index 64 “EDC current”** — confirmed by behavioural validation on
+   9950X (0x620205): 16–22 A video, 35–45 A single-core, 180 A all-core.
+   Independent instrument comparison remains outstanding.
 3. **Index 11** — GN 9800X3D/9950X3D: Tctl (k10temp-matched, confirmed for
    0x6201xx/0x6202xx). TX author: “IOD hotspot” everywhere. LHM 0x1E0004:
    “EDC”. Vermeer fixture reads 1.09 at index 11 (a voltage, not °C).
@@ -218,7 +218,7 @@ Vermeer/Cezanne/Renoir/Phoenix, uclk/mclk order on Matisse and
 ## Required real-hardware validation (promote documented → confirmed)
 
 1. 0x620105 residency lane order (conflict #9) — pin-a-core load dataset.
-2. 0x620205 index 64 = EDC current (load ramp vs d[9] correlation).
+2. 0x620205 index 64 = EDC current (independent instrument comparison).
 3. Vermeer 380804/380805 per-core volt/temp (conflict #10) — 5950X dataset.
 4. Matisse dual-CCD per-core (conflict #11) — 3950X dataset.
 5. Any 12-core (9900X/7900X/5900X) fused-slot pattern: confirm the
@@ -1666,7 +1666,7 @@ The 6900HS dump (SMU 4.69.53.0, 684 float32 entries) contradicts the previous ge
 | Thermal Limit | 10 | 0x028 | 1 | **confirmed** |  |
 | Tctl | 11 | 0x02C | 1 | **confirmed** | author map called 11 'IOD hotspot'; GN matched it to k10temp Tctl |
 | EDC Limit | 63 | 0x0FC | 1 | **confirmed** |  |
-| EDC Current? | 64 | 0x100 | 1 | CANDIDATE | GN: behaviour like EDC current but identity not independently proven |
+| EDC Current | 64 | 0x100 | 1 | **confirmed** | 9950X behavioural validation; independent comparison outstanding |
 | FIT Metric | 16 | 0x040 | 1 | documented |  |
 | VID Limit | 18 | 0x048 | 1 | documented |  |
 | VID (Aggregate) | 19 | 0x04C | 1 | documented |  |

@@ -810,7 +810,7 @@ Vermeer/Cezanne/Renoir/Phoenix, uclk/mclk order on Matisse and
 | Core Clock | 240 | 0x3C0 | 8 | documented |  |
 
 ### `0x00450005` — Rembrandt 05-rev
-> ZS clocks + per-core candidates from [upstream issue #10](https://github.com/Death4two/TuxTimings/issues/10)
+> ZS clocks + provisional per-core mappings from [upstream issue #10](https://github.com/Death4two/TuxTimings/issues/10)
 
 | Metric | Index | Byte offset | Lanes | Confidence | Conflict / note |
 |---|---:|---:|---:|---|---|
@@ -818,10 +818,10 @@ Vermeer/Cezanne/Renoir/Phoenix, uclk/mclk order on Matisse and
 | UCLK | 429 | 0x6B4 | 1 | documented |  |
 | MCLK | 430 | 0x6B8 | 1 | documented |  |
 | CLDO_VDDP | 565 | 0x8D4 | 1 | candidate | Zero in issue #10 dump; unverified |
-| Core Power | 219 | 0x36C | 8 | candidate | Single 6900HS dump; workload validation needed |
-| Core Voltage | 227 | 0x38C | 8 | candidate | Single 6900HS dump; workload validation needed |
-| Core Temp | 235 | 0x3AC | 8 | candidate | Single 6900HS dump; workload validation needed |
-| Core Clock | 251 | 0x3EC | 8 | candidate | Single 6900HS dump; workload validation needed |
+| Core Power | 219 | 0x36C | 8 | documented | Single 6900HS dump; workload validation needed |
+| Core Voltage | 227 | 0x38C | 8 | documented | Single 6900HS dump; workload validation needed |
+| Core Temp | 235 | 0x3AC | 8 | documented | Single 6900HS dump; workload validation needed |
+| Core Clock | 251 | 0x3EC | 8 | documented | Single 6900HS dump; workload validation needed |
 
 The 6900HS dump (SMU 4.69.53.0, 684 float32 entries) contradicts the previous generic ZenMaster per-core offsets. Additional candidate blocks: effective clock 267–274 (GHz), active residency 275–282 and complementary idle residency 283–290 (%). These are not independently validated. ZS clock offsets remain unchanged; 0x00450004 is not modified.
 

@@ -74,8 +74,8 @@ typedef struct {
     float core_clock_mhz, bclk_mhz; /* reserved */
     float fclk_mhz, uclk_mhz, mclk_mhz;
     float memory_clock_mhz; /* reserved */
-    float core_clocks_ghz[MAX_CORES]; /* reserved */
-    int   core_clocks_count; /* reserved */
+    float core_clocks_ghz[MAX_CORES];
+    int   core_clocks_count;
     /* Temps */
     float cpu_temp_c;
     float core_temps_c[MAX_CORES];
@@ -93,6 +93,8 @@ typedef struct {
     float core_cc1_pct[MAX_CORES];
     float core_cc6_pct[MAX_CORES];   int core_res_count;
     float core_usage_pct[MAX_CORES];
+    float core_usage_threads[MAX_CORES][2];
+    unsigned char core_usage_thread_count[MAX_CORES];
     int   core_usage_count;
     float core_freq_mhz[MAX_CORES];
     int   core_freq_count;

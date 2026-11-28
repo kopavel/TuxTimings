@@ -63,6 +63,7 @@ typedef struct {
     float tdc_limit_a;     bool has_tdc_limit;
     float tdc_current_a;   bool has_tdc_current;
     float edc_limit_a;     bool has_edc_limit;
+    float edc_current_a;   bool has_edc_current;
     float thermal_limit_c; bool has_thermal_limit;
     bool  has_socket_power;
     /* Voltages */

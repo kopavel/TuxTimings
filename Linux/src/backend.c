@@ -916,27 +916,18 @@ static void read_core_usage(smu_metrics_t *m)
     fclose(f);
 
     m->core_usage_count = aggregate_core_values(logical_usage, valid, m->core_usage_pct);
+    for (int cpu = 0; cpu < MAX_LOGICAL_CPUS; cpu++) {
+        int c = s_cpu_core[cpu];
+        if (c < 0 || !valid[cpu]) continue;
+        unsigned int t = m->core_usage_thread_count[c];
+        if (t < 2) {
+            m->core_usage_threads[c][t] = logical_usage[cpu];
+            m->core_usage_thread_count[c]++;
+        }
+    }
 }
 
 /* ── Per-core frequency from cpufreq ────────────────────────────────── */
-
-static void read_core_freq(smu_metrics_t *m)
-{
-    float logical_freq[MAX_LOGICAL_CPUS];
-    bool valid[MAX_LOGICAL_CPUS] = {false};
-    memset(logical_freq, 0, sizeof(logical_freq));
-
-    for (int i = 0; i < MAX_LOGICAL_CPUS; i++) {
-        char path[256];
-        snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", i);
-        int khz = read_int_file(path);
-        if (khz <= 0) continue;
-        logical_freq[i] = khz / 1000.0f;
-        valid[i] = true;
-    }
-
-    m->core_freq_count = aggregate_core_values(logical_freq, valid, m->core_freq_mhz);
-}
 
 /* ── BCLK from DMI Type 4 (External Clock field) ───────────────────── */
 
@@ -1236,6 +1227,27 @@ char *backend_read_pm_debug(void)
     int count = 0;
     uint32_t version = read_smu_uint32("pm_table_version");
     read_pm_table_raw(&table, &count);
+    pm_dump_emit(&ctx, "OS clock (scaling_cur_freq, MHz; logical CPUs):\n");
+    int cores = core_topology();
+    for (int c = 0; c < cores; c++) {
+        pm_dump_emit(&ctx, "Core %2d:", c);
+        for (int cpu = 0; cpu < MAX_LOGICAL_CPUS; cpu++) {
+            if (s_cpu_core[cpu] != c) continue;
+            char path[256];
+            snprintf(path, sizeof(path),
+                     "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", cpu);
+            int khz = read_int_file(path);
+            if (khz > 0) pm_dump_emit(&ctx, " CPU%d=%d", cpu, khz / 1000);
+            else pm_dump_emit(&ctx, " CPU%d=N/A", cpu);
+        }
+        pm_dump_emit(&ctx, "\n");
+    }
+    if (version == 0x00620205 && table && count >= 365) {
+        pm_dump_emit(&ctx, "\nSMU Core Clock (349-364, GHz; physical slots):\n");
+        for (int c = 0; c < 16; c++)
+            pm_dump_emit(&ctx, "Core %2d: %.3f\n", c, (double)table[349+c]);
+    }
+    pm_dump_emit(&ctx, "\n");
     pm_debug_emit_unverified(pm_dump_emit, &ctx, version, table, count, s_physical_cores);
     free(table);
     return buf;
@@ -1553,7 +1565,6 @@ void backend_read_summary(system_summary_t *out)
 
     /* Per-core usage and frequency */
     read_core_usage(&out->metrics);
-    read_core_freq(&out->metrics);
 
     /* DRAM timings — one entry per probed UMC instance (Zen 5: UMC0/UMC1) */
     {

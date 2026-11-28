@@ -366,8 +366,8 @@ static void fmt_array(pm_out_fn out, void *ctx, const pm_field_t *f,
     }
 }
 
-void pm_debug_emit(pm_out_fn out, void *ctx, uint32_t version,
-                   const float *table, int count, int physical_cores)
+static void pm_debug_emit_filtered(pm_out_fn out, void *ctx, uint32_t version,
+                   const float *table, int count, int physical_cores, bool unverified_only)
 {
     const pm_layout_t *L = pm_layout_lookup(version);
     out(ctx, "=== SMU PM Table Decoded ===\n");
@@ -399,12 +399,29 @@ void pm_debug_emit(pm_out_fn out, void *ctx, uint32_t version,
         out(ctx, "(table not available)\n\n");
         return;
     }
+    bool found = false;
     for (size_t i = 0; i < L->field_count; i++) {
         const pm_field_t *f = &L->fields[i];
+        if (unverified_only && f->confidence != PM_CANDIDATE &&
+            f->confidence != PM_CONFLICTED) continue;
+        found = true;
         if (f->count == 1)
             fmt_scalar(out, ctx, f, table, count);
         else
             fmt_array(out, ctx, f, table, count);
     }
+    if (!found && unverified_only) out(ctx, "(no unverified fields)\n");
     out(ctx, "\n");
+}
+
+void pm_debug_emit(pm_out_fn out, void *ctx, uint32_t version,
+                   const float *table, int count, int physical_cores)
+{
+    pm_debug_emit_filtered(out, ctx, version, table, count, physical_cores, false);
+}
+
+void pm_debug_emit_unverified(pm_out_fn out, void *ctx, uint32_t version,
+                              const float *table, int count, int physical_cores)
+{
+    pm_debug_emit_filtered(out, ctx, version, table, count, physical_cores, true);
 }

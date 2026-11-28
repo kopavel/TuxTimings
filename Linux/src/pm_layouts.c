@@ -665,10 +665,10 @@ static const pm_field_t rembrandt_450005_fields[] = {
     F0(PM_M_UCLK, 429, PM_U_MHZ, 1.0f, PM_SOURCE_DOCUMENTED, SRC_ZS " (0x6B4)"),
     F0(PM_M_MCLK, 430, PM_U_MHZ, 1.0f, PM_SOURCE_DOCUMENTED, SRC_ZS " (0x6B8)"),
     F0C(PM_M_VDDP, 565, PM_U_V, 1.0f, PM_CANDIDATE, SRC_ZS, "Zero in issue #10 dump; unverified"),
-    FAC(PM_M_CORE_POWER, 219, 8, PM_U_W, 1.0f, PM_CANDIDATE, "upstream issue #10 (0x36C)", "Single 6900HS dump; needs workload validation"),
-    FAC(PM_M_CORE_VOLTAGE, 227, 8, PM_U_V, 1.0f, PM_CANDIDATE, "upstream issue #10 (0x38C)", "Single 6900HS dump; needs workload validation"),
-    FAC(PM_M_CORE_TEMP, 235, 8, PM_U_C, 1.0f, PM_CANDIDATE, "upstream issue #10 (0x3AC)", "Single 6900HS dump; needs workload validation"),
-    FAC(PM_M_CORE_CLK, 251, 8, PM_U_GHZ, 1.0f, PM_CANDIDATE, "upstream issue #10 (0x3EC)", "Single 6900HS dump; needs workload validation"),
+    FAC(PM_M_CORE_POWER, 219, 8, PM_U_W, 1.0f, PM_SOURCE_DOCUMENTED, "upstream issue #10 (0x36C)", "Single 6900HS dump; needs workload validation"),
+    FAC(PM_M_CORE_VOLTAGE, 227, 8, PM_U_V, 1.0f, PM_SOURCE_DOCUMENTED, "upstream issue #10 (0x38C)", "Single 6900HS dump; needs workload validation"),
+    FAC(PM_M_CORE_TEMP, 235, 8, PM_U_C, 1.0f, PM_SOURCE_DOCUMENTED, "upstream issue #10 (0x3AC)", "Single 6900HS dump; needs workload validation"),
+    FAC(PM_M_CORE_CLK, 251, 8, PM_U_GHZ, 1.0f, PM_SOURCE_DOCUMENTED, "upstream issue #10 (0x3EC)", "Single 6900HS dump; needs workload validation"),
 };
 
 /* Phoenix mobile 0x4C0001-4C0007 (ZS; SVI3 stride 4, no VRM temp) */

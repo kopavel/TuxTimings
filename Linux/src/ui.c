@@ -492,16 +492,15 @@ static GtkWidget *build_cpu_tab(app_widgets_t *w)
     gtk_box_set_homogeneous(GTK_BOX(top), TRUE);
 
     /* Left: ONE merged per-core table — kernel-side measurements (temp,
-     * OS load, cpufreq) plus verified SMU PM-table metrics (V, W, C0/CC6).
-     * No PM-derived frequency column (that block is conflicted — see
-     * docs/SMU_PM_TABLE_MAP.md). Unavailable cells render N/A, never 0. */
+     * OS load) plus SMU PM-table metrics (clock, V, W, C0/CC6).
+     * Unavailable cells render N/A. */
     GtkWidget *core_box = make_section_box();
     {
         gtk_box_append(GTK_BOX(core_box), make_label("Core Telemetry", "section-title"));
         GtkWidget *g = gtk_grid_new();
         gtk_grid_set_row_spacing(GTK_GRID(g), 2);
         gtk_grid_set_column_spacing(GTK_GRID(g), 8);
-        const char *hdr[] = { "Core", "°C", "OS load", "MHz", "V", "W", "C0%", "CC6%" };
+        const char *hdr[] = { "Core", "°C", "OS T0/T1", "MHz", "V", "W", "C0%", "CC6%" };
         for (int c = 0; c < 8; c++)
             gtk_grid_attach(GTK_GRID(g), make_label(hdr[c], "label"), c, 0, 1, 1);
         for (int i = 0; i < MAX_CORES; i++) {
@@ -524,7 +523,7 @@ static GtkWidget *build_cpu_tab(app_widgets_t *w)
         gtk_box_append(GTK_BOX(core_box), g);
         /* per-column legend, one bullet per row (not one text block) */
         static const char *bullets[] = {
-            "• °C / OS load / MHz — kernel (k10temp, cpufreq)",
+            "• OS T0/T1 — Linux logical CPU load; MHz — SMU clock",
             "• V, W — per-core voltage and power from the SMU PM table",
             "• C0% — silicon-measured core-awake share (not OS load)",
             "• CC6% — core deep-sleep share; C0+CC1+CC6 ~= 100%",
@@ -1473,14 +1472,18 @@ static void refresh_ui(app_widgets_t *w)
                               (double)m->core_temps_c[i]);
             else
                 set_label_text(w->lbl_core_t[i], "N/A");
-            if (i < m->core_usage_count)
+            if (i < m->core_usage_count && m->core_usage_thread_count[i] == 2)
+                set_label_fmt(w->lbl_core_load[i], "%.0f/%.0f%%",
+                              (double)m->core_usage_threads[i][0],
+                              (double)m->core_usage_threads[i][1]);
+            else if (i < m->core_usage_count && m->core_usage_thread_count[i] == 1)
                 set_label_fmt(w->lbl_core_load[i], "%.0f%%",
-                              (double)m->core_usage_pct[i]);
+                              (double)m->core_usage_threads[i][0]);
             else
                 set_label_text(w->lbl_core_load[i], "N/A");
-            if (i < m->core_freq_count && m->core_freq_mhz[i] > 0.0f)
+            if (i < m->core_clocks_count && m->core_clocks_ghz[i] > 0.0f)
                 set_label_fmt(w->lbl_core_freq[i], "%.0f",
-                              (double)m->core_freq_mhz[i]);
+                              1000.0 * m->core_clocks_ghz[i]);
             else
                 set_label_text(w->lbl_core_freq[i], "N/A");
             if (i < m->core_voltages_count && m->core_voltages[i] > 0.0f)

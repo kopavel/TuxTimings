@@ -1198,6 +1198,22 @@ static int read_pm_table_raw(float **out_floats, int *out_count)
 
 /* ── Public API ─────────────────────────────────────────────────────── */
 
+char *backend_read_pm_debug(void)
+{
+    const size_t cap = 65536;
+    char *buf = calloc(1, cap);
+    if (!buf) return NULL;
+    size_t off = 0;
+    struct pm_dump_ctx ctx = { buf, cap, &off };
+    float *table = NULL;
+    int count = 0;
+    uint32_t version = read_smu_uint32("pm_table_version");
+    read_pm_table_raw(&table, &count);
+    pm_debug_emit(pm_dump_emit, &ctx, version, table, count, s_physical_cores);
+    free(table);
+    return buf;
+}
+
 int backend_is_supported(void)
 {
     char path[512];

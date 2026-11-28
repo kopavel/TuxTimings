@@ -35,4 +35,7 @@ typedef void (*pm_out_fn)(void *ctx, const char *fmt, ...);
 void pm_debug_emit(pm_out_fn out, void *ctx, uint32_t version,
                    const float *table, int count, int physical_cores);
 
+void pm_debug_emit_unverified(pm_out_fn out, void *ctx, uint32_t version,
+                              const float *table, int count, int physical_cores);
+
 #endif
